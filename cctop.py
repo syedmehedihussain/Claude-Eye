@@ -1361,14 +1361,16 @@ class App:
                     scr.kv(r, ix, label, "-", C["dim"], lw)
                     r += 2
                     continue
-                left = max(0.0, 100 - used)
-                attr = C["teal"] if left > 50 else C["sand"] if left > 20 else C["clay"]
+                used = min(max(used, 0.0), 100.0)
+                left = 100 - used
+                # the bar fills up as the limit is used: teal, then sand past half, clay past 80%
+                attr = C["teal"] if used < 50 else C["sand"] if used < 80 else C["clay"]
                 cx = scr.kv(r, ix, label, lw=lw)
-                pct = f"{left:3.0f}% left"
+                pct = f"{used:3.0f}% used"
                 cells = max(4, w - 4 - (cx - ix) - len(pct) - 2)
-                scr.meter(r, cx, cells, left, attr)
+                scr.meter(r, cx, cells, used, attr)
                 scr.put(r, cx + cells + 2, pct, attr | curses.A_BOLD)
-                note = f"{used:.0f}% used"
+                note = f"{left:.0f}% left"
                 try:
                     reset = datetime.fromisoformat(win["resets_at"])
                     secs = (reset - now).total_seconds()
