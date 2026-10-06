@@ -1118,21 +1118,38 @@ class Screen:
             self.put(y, x + n, value, C["fg"] if attr is None else attr, room)
         return x + n
 
-    def meter(self, y, x, cells, pct, attr):
-        """The one bar style used everywhere: ▰ filled cells, ▱ empty cells."""
+    def squares(self, y, x, parts):
+        """Text-sized squares (two full blocks) with a one-column gap. parts: [(count, attr)]."""
+        i = 0
+        for count, attr in parts:
+            for _ in range(count):
+                self.put(y, x + 3 * i, SQ, attr)
+                i += 1
+        return sq_width(i)
+
+    def meter(self, y, x, cols, pct, attr):
+        """The one bar style used everywhere: lit squares, then dim ones, within `cols` columns."""
+        n = sq_count(cols)
         pct = min(max(pct, 0), 100)
-        on = round(cells * pct / 100)
+        on = round(n * pct / 100)
         if pct > 0 and on == 0:
             on = 1
-        self.put(y, x, ON * on, attr)
-        self.put(y, x + on, OFF * (cells - on), C["faint"])
+        self.squares(y, x, [(on, attr), (n - on, C["faint"])])
 
     def hbar(self, y, x, cells, frac, attr):
         self.meter(y, x, cells, 100 * frac, attr)
 
 
 SPARK = " ▁▂▃▄▅▆▇█"
-ON, OFF = "▰", "▱"
+SQ = "██"  # a terminal cell is about twice as tall as wide, so two blocks make a square
+
+
+def sq_count(cols):
+    return max(1, (cols + 1) // 3)
+
+
+def sq_width(n):
+    return 3 * n - 1 if n else 0
 
 
 def stat_text(scr, y, x, add, rem):
@@ -1144,7 +1161,7 @@ def stat_text(scr, y, x, add, rem):
 
 
 def stat_bar(scr, y, x, cells, add, rem, scale=1.0):
-    """GitHub-style diff bar: green cells for additions, red for deletions, empty for the rest."""
+    """GitHub-style diff bar of `cells` squares: green for additions, red for deletions."""
     total = add + rem
     filled = max(1, round(cells * min(scale, 1))) if total else 0
     green = round(filled * add / total) if total else 0
@@ -1153,9 +1170,7 @@ def stat_bar(scr, y, x, cells, add, rem, scale=1.0):
     red = filled - green
     if rem and not red and filled > 1:
         green, red = green - 1, 1
-    scr.put(y, x, ON * green, C["teal"])
-    scr.put(y, x + green, ON * red, C["clay"])
-    scr.put(y, x + green + red, OFF * (cells - green - red), C["faint"])
+    scr.squares(y, x, [(green, C["teal"]), (red, C["clay"]), (cells - green - red, C["faint"])])
 
 
 def spark(values, width, lo=None, hi=None):
@@ -1392,7 +1407,7 @@ class App:
             extras.append(("Fan", f"{sn['fan']}rpm"))
         room = w - 4
         # shrink until the core segments fit: smaller meters, tighter gaps, shorter disk text
-        for cells, gap, short in ((5, 3, False), (4, 2, False), (3, 2, True), (0, 2, True)):
+        for cells, gap, short in ((14, 3, False), (11, 2, False), (8, 2, False), (8, 2, True), (5, 2, True), (0, 2, True)):
             if short:
                 segs[2] = ("Disk", segs[2][1], f"{100 * du / dt:.0f}%", None)
             widths = [len(k) + 2 + (cells + 1 if cells else 0) + len(v) for k, _, v, _ in segs]
@@ -1524,11 +1539,11 @@ class App:
         if not items:
             scr.put(y + 1, x + 2, "no usage yet", C["dim"])
             return
-        cells = max(4, min(10, (w - 4) // 3))
+        cells = max(5, min(17, (w - 4) // 3))
         for i, (k, v) in enumerate(items[:h - 2]):
             r = y + 1 + i
             tail = f"{100 * v / total:3.0f}%"
-            nw = w - 7 - len(tail) - cells
+            nw = w - 6 - len(tail) - cells
             name = k if len(k) <= nw else "…" + k[-(nw - 1):]
             scr.put(r, x + 2, name, C["fg"] if i == 0 else C["teal"], nw)
             scr.meter(r, x + w - 3 - len(tail) - cells, cells, 100 * v / total, C["sand"] if i == 0 else C["muted"])
@@ -1674,9 +1689,7 @@ class App:
                     if not n:
                         continue
                     cx += scr.put(r, cx, f"{arrow}{n} ", attr | curses.A_BOLD)
-                    cells = min(n, 6)
-                    scr.put(r, cx, "▰" * cells, attr)
-                    cx += cells + 1
+                    cx += scr.squares(r, cx, [(min(n, 5), attr)]) + 1
                     cx += scr.put(r, cx, f"to {word}", C["dim"]) + 2
             r += 1
 
@@ -1686,8 +1699,8 @@ class App:
             if g["add"] or g["del"] or g["untracked"]:
                 cx += stat_text(scr, r, cx, g["add"], g["del"])
                 if g["add"] or g["del"]:
-                    stat_bar(scr, r, cx + 1, 10, g["add"], g["del"])
-                    cx += 12
+                    stat_bar(scr, r, cx + 1, 5, g["add"], g["del"])
+                    cx += sq_width(5) + 2
                 if g["untracked"]:
                     scr.put(r, cx, f"{g['untracked']} new", C["lav"], x + w - cx)
             else:
@@ -1704,14 +1717,14 @@ class App:
                 if r >= bottom:
                     break
                 stat = f"+{a} −{d}"
-                cells = 6
+                cells = sq_width(3)
                 nw = w - 2 - len(stat) - cells - 2
                 name = path if len(path) <= nw else "…" + path[-(nw - 1):]
                 scr.put(r, x + 1, "▸", C["faint"])
                 scr.put(r, x + 3, name, C["fg"], nw)
                 sx = x + w - cells - 1 - len(stat)
                 stat_text(scr, r, sx, a, d)
-                stat_bar(scr, r, x + w - cells, cells, a, d, scale=(a + d) / peak)
+                stat_bar(scr, r, x + w - cells, 3, a, d, scale=(a + d) / peak)
                 r += 1
             if len(files) > room and r < bottom:
                 scr.put(r, x + 3, f"+{len(files) - room} more files", C["dim"])
@@ -1975,7 +1988,7 @@ class App:
             scr.put(y, x, "process gone", C["dim"])
             return
         cx = scr.kv(y, x, "CPU", lw=9)
-        cells = max(4, min(12, w - 20))
+        cells = max(5, min(14, w - 20))
         scr.meter(y, cx, cells, p["cpu"], level(p["cpu"], 50, 85))
         scr.put(y, cx + cells + 1, f"{p['cpu']:.0f}%", C["fg"])
         rows = [("Memory", f"{p['rss'] / 2**20:.0f} MB rss"),
@@ -2076,7 +2089,7 @@ class App:
             done = sum(1 for m in steps if m.lower() == "x")
             r = y + 1 + len(info)
             cx = scr.kv(r, rx + 2, "Progress", lw=10)
-            cells = max(6, min(20, rw - 30))
+            cells = max(8, min(29, rw - 30))
             scr.meter(r, cx, cells, 100 * done / len(steps), C["teal"])
             scr.put(r, cx + cells + 2, f"{done}/{len(steps)} next steps done", C["dim"], rw - (cx - rx) - cells - 4)
 
@@ -2152,7 +2165,7 @@ class App:
         bx = x + (w - bw) // 2
         ix = bx + 2
         lw = 9
-        cells = 16
+        cells = 29
         t = sn["temps"]
         rows = 10
         hist = h >= rows + 2 + 5
