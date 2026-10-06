@@ -1195,6 +1195,7 @@ class App:
         self.day = 0  # 0 = today, 1 = yesterday ...
         self.sel = 0
         self.sel_sid = None
+        self.roots = {}
         self.projects = []
         self.projects_at = 0
         self.proj_name = None
@@ -1301,44 +1302,167 @@ class App:
 
     # ---- tabs
     def tab_overview(self, scr, y, x, h, w):
-        a = self.a
+        """Logo, then three quiet sections: limits, live, system."""
+        cw = min(w - 2, 84)
+        cx = x + (w - cw) // 2
+        live = self.live[:max(1, min(len(self.live), 5))]
         logo = logo_rows("cctop.")
-        # full layout needs 22 rows; on short terminals the two boxes lose their
-        # lowest-priority lines and the gap above them goes
-        compact = h < len(logo) + 5 + 10 + 3
-        box_h = 8 if compact else 10
-        gap = 0 if compact else 1
-        total = len(logo) + 4 + gap + box_h + 3
+        body = 1 + 4 + 1 + 1 + max(1, len(live)) + 1 + 1 + 1  # headers, rows and gaps
+        show_logo = h >= body + len(logo) + 2
+        total = body + (len(logo) + 2 if show_logo else 0)
         r = y + max(0, (h - total) // 2)
+        if show_logo:
+            for line in logo:
+                scr.center(r, x, w, line, C["fg"] | curses.A_BOLD)
+                r += 1
+            r += 2
 
-        for line in logo:
-            scr.center(r, x, w, line, C["fg"] | curses.A_BOLD)
-            r += 1
-        tag, accent = "Claude Code usage, ", "at a glance."
-        tx = x + (w - len(tag + accent)) // 2
-        scr.put(r + 1, tx, tag, C["fg"])
-        scr.put(r + 1, tx + len(tag), accent, C["sand"] | ITALIC)
-        scr.put(r + 2, tx, "─" * len(tag + accent), C["faint"])
+        r = self.ov_header(scr, r, cx, cw, "limits")
+        r = self.ov_limits(scr, r, cx, cw)
+        r = self.ov_header(scr, r + 1, cx, cw, "live", f"{len(self.live)} session{'s' * (len(self.live) != 1)}")
+        r = self.ov_live(scr, r, cx, cw, live)
+        r = self.ov_header(scr, r + 1, cx, cw, "system", self.sys.host)
+        self.ov_system(scr, r, cx, cw)
 
-        busy = sum(1 for s in self.live if s["status"] == "busy")
-        agents = sum(s["agents"] for s in self.live)
-        if self.live:
-            bits = [f"{len(self.live)} live", f"{busy} busy"] + ([f"{agents} agents"] if agents else [])
-            status = " · ".join(bits)
-        else:
-            status = "no live sessions"
-        sx = x + (w - len(status) - 2) // 2
-        scr.put(r + 3, sx, "[", C["muted"])
-        scr.put(r + 3, sx + 1, status, C["teal"] if busy else C["dim"])
-        scr.put(r + 3, sx + 1 + len(status), "]", C["muted"])
-        r += 4 + gap
+    def ov_header(self, scr, y, x, w, label, note=""):
+        n = scr.put(y, x, label, C["dim"])
+        right = f" {note}" if note else ""
+        scr.put(y, x + n + 1, "─" * max(0, w - n - 1 - len(right) - (1 if note else 0)), C["faint"])
+        if right:
+            scr.put(y, x + w - len(right), right, C["dim"])
+        return y + 1
 
-        bw = min(58, (w - 2) // 2)
-        bx = x + (w - 2 * bw - 2) // 2
-        cur = self.live[0] if self.live else None
-        self.box_limits(scr, r, bx, box_h, bw, cur)
-        self.box_session(scr, r, bx + bw + 2, box_h, bw, cur, compact)
-        self.box_sysline(scr, r + box_h, bx, 3, 2 * bw + 2)
+    def ov_limits(self, scr, y, x, w):
+        lim = self.limits
+        if lim.data is None:
+            scr.put(y, x + 1, lim.error or "loading limits…", C["dim"], w - 1)
+            return y + 4
+        now = datetime.now().astimezone()
+        lw = 7
+        r = y
+        for label, key, span in (("5h", "five_hour", 5 * 3600), ("week", "seven_day", 7 * 86400)):
+            win = lim.data.get(key) or {}
+            used = win.get("utilization")
+            try:
+                reset = datetime.fromisoformat(win["resets_at"])
+                left_s = max(0.0, (reset - now).total_seconds())
+            except (KeyError, TypeError, ValueError):
+                reset, left_s = None, None
+            if used is None:
+                scr.put(r, x + 1, label, C["muted"])
+                scr.put(r, x + 1 + lw, "-", C["dim"])
+                r += 2
+                continue
+            used = min(max(used, 0.0), 100.0)
+            attr = C["teal"] if used < 50 else C["sand"] if used < 80 else C["clay"]
+
+            # row 1: bar of what is used, percent, reset time
+            when = ""
+            if reset:
+                when = f"resets in {fmt_dur(left_s)}" if left_s < 86400 else "resets " + reset.astimezone().strftime("%a %H:%M").lower()
+            tail = f"{used:3.0f}%"
+            # same bar length for both windows, whatever the reset text says
+            bar_cols = max(8, w - 1 - lw - 4 - 17 - 5)
+            n_sq = sq_count(bar_cols)
+            bw = sq_width(n_sq)
+            scr.put(r, x + 1, label, C["fg"] | curses.A_BOLD)
+            bx = x + 1 + lw
+            scr.meter(r, bx, bw, used, attr)
+            scr.put(r, bx + bw + 1, tail, attr | curses.A_BOLD)
+            scr.put(r, x + w - len(when), when, C["dim"])
+
+            # row 2: time track under the bar, dot at now, and where this pace ends up
+            if left_s is not None:
+                elapsed = min(1.0, max(0.0, 1 - left_s / span))
+                dot = min(bw - 1, int(round(elapsed * (bw - 1))))
+                scr.put(r + 1, bx, "━" * dot, C["muted"])
+                scr.put(r + 1, bx + dot, "●", C["fg"])
+                scr.put(r + 1, bx + dot + 1, "─" * (bw - dot - 1), C["faint"])
+                pace, pattr = self.pace(used, elapsed, span * elapsed)
+                scr.put(r + 1, bx + bw + 1, pace, pattr, x + w - (bx + bw + 1))
+            r += 2
+        return r
+
+    @staticmethod
+    def pace(used, elapsed, elapsed_s):
+        """Where the window ends up if usage keeps its current rate."""
+        if elapsed < 0.03 or used <= 0:
+            return "just started", C["dim"]
+        projected = used / elapsed
+        if projected < 100:
+            return f"on pace for {projected:.0f}%", C["teal"] if projected < 80 else C["sand"]
+        rate = used / max(elapsed_s, 1)  # percent per second
+        return f"limit in ~{fmt_dur((100 - used) / rate)}", C["clay"]
+
+    def ov_live(self, scr, y, x, w, rows):
+        if not rows:
+            scr.put(y, x + 1, "nothing running · start claude in a project folder", C["dim"])
+            return y + 1
+        spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[int(time.time() * 8) % 10]
+        names = [self.project_name(row) for row in rows]
+        nw = min(18, max(len(n) for n in names) + 1)
+        dupes = len(set(names)) < len(names)  # two sessions on one project: show which is which
+        sw = min(16, max(len(r["name"]) for r in rows) + 1) if dupes else 0
+        for i, (row, name) in enumerate(zip(rows, names)):
+            r = y + i
+            s = row["session"]
+            busy = row["status"] == "busy"
+            scr.put(r, x + 1, spin if busy else "○", C["teal"] if busy else C["dim"])
+            scr.put(r, x + 3, name, C["fg"] | curses.A_BOLD if busy else C["muted"], nw)
+            if busy:
+                pend = list(s.inflight.values())
+                doing = pend[-1]["summary"] if pend else "thinking"
+            else:
+                doing = "waiting for you"
+            since = fmt_dur(time.time() - row["status_since"]) if row["status_since"] else ""
+            right = (f"{row['agents']} agents · " if row["agents"] else "") + since
+            if dupes:
+                scr.put(r, x + 3 + nw, row["name"], C["dim"], sw)
+            dx = x + 3 + nw + sw + 1
+            scr.put(r, dx, doing, C["sand"] if busy else C["dim"], x + w - dx - len(right) - 2)
+            scr.put(r, x + w - len(right), right, C["rose"] if row["agents"] else C["dim"])
+        return y + len(rows)
+
+    def project_name(self, row):
+        sid = row["session"].sid
+        hit = self.roots.get(sid)
+        if not hit or time.time() - hit[0] > 15:
+            hit = (time.time(), session_root(row, row["session"]))
+            self.roots[sid] = hit
+        name = os.path.basename(hit[1])
+        return name if hit[1] != os.path.realpath(HOME) else "~"
+
+    def ov_system(self, scr, y, x, w):
+        sn = self.sys.snap
+        t = sn["temps"]
+        mu, mt = sn["mem"]
+        du, dt = sn["disk"]
+        bat = sn["bat"]
+        hot = "cpu" in t and t["cpu"] >= 85
+        cpu_text = f"{sn['cpu']:.0f}%" + (f" {t['cpu']:.0f}°" if "cpu" in t else "")
+        items = [("cpu", sn["cpu"], cpu_text, C["clay"] if hot else level(sn["cpu"]))]
+        items.append(("mem", 100 * mu / mt, f"{100 * mu / mt:.0f}%", level(100 * mu / mt)))
+        items.append(("disk", 100 * du / dt, f"{(dt - du) / 2**30:.0f}G free", level(100 * du / dt)))
+        if bat:
+            battr = C["clay"] if bat["pct"] <= 15 else C["sand"] if bat["pct"] <= 30 else C["teal"]
+            items.append(("bat", bat["pct"], f"{bat['pct']}%", battr))
+        items.append(("up", None, fmt_dur(sn["uptime"]), C["fg"]))
+        # meters get as many squares as fit (up to four), or none on narrow screens
+        for sq, gap in ((4, 3), (3, 3), (3, 2), (2, 2), (0, 3)):
+            need = sum(len(k) + 1 + (sq_width(sq) + 1 if p is not None and sq else 0) + len(v)
+                       for k, p, v, _ in items) + gap * (len(items) - 1)
+            if need <= w - 1:
+                break
+        cx = x + 1
+        for k, pct, v, attr in items:
+            if cx >= x + w:
+                break
+            cx += scr.put(y, cx, k, C["dim"]) + 1
+            if pct is not None and sq:
+                scr.meter(y, cx, sq_width(sq), pct, attr)
+                cx += sq_width(sq) + 1
+            cx += scr.put(y, cx, v, attr if pct is not None else C["fg"], x + w - cx) + gap
+        return y + 1
 
     def box_limits(self, scr, y, x, h, w, cur, project=None):
         lim = self.limits
@@ -1391,95 +1515,6 @@ class App:
                 break
             scr.kv(r, ix, k, v, lw=lw, maxw=w - 4)
             r += 1
-
-    def box_sysline(self, scr, y, x, h, w):
-        sy, sn = self.sys, self.sys.snap
-        if y + h > scr.h - 1:
-            return
-        scr.box(y, x, h, w, sy.host)
-        t = sn["temps"]
-        mu, mt = sn["mem"]
-        du, dt = sn["disk"]
-        bat = sn["bat"]
-        segs = [("CPU", sn["cpu"], f"{sn['cpu']:.0f}%" + (f" {t['cpu']:.0f}°" if "cpu" in t else ""), None),
-                ("Mem", 100 * mu / mt, f"{100 * mu / mt:.0f}%", None),
-                ("Disk", 100 * du / dt, f"{(dt - du) / 2**30:.0f}G free", None)]
-        if bat:
-            segs.append(("Bat", bat["pct"], f"{bat['pct']}%" + (" +" if bat["status"] == "charging" else ""),
-                         C["clay"] if bat["pct"] <= 15 else C["sand"] if bat["pct"] <= 30 else C["teal"]))
-        extras = [("Up", fmt_dur(sn["uptime"]))]
-        if "nvme" in t:
-            extras.append(("SSD", f"{t['nvme']:.0f}°"))
-        if sn["fan"] is not None:
-            extras.append(("Fan", f"{sn['fan']}rpm"))
-        room = w - 4
-        # shrink until the core segments fit: smaller meters, tighter gaps, shorter disk text
-        for cells, gap, short in ((14, 3, False), (11, 2, False), (8, 2, False), (8, 2, True), (5, 2, True), (0, 2, True)):
-            if short:
-                segs[2] = ("Disk", segs[2][1], f"{100 * du / dt:.0f}%", None)
-            widths = [len(k) + 2 + (cells + 1 if cells else 0) + len(v) for k, _, v, _ in segs]
-            used = sum(widths) + gap * (len(segs) - 1)
-            if used <= room:
-                break
-        shown = []
-        for k, v in extras:
-            need = len(k) + 2 + len(v) + gap
-            if used + need <= room:
-                shown.append((k, v))
-                used += need
-        cx = x + 2 + max(0, (room - used) // 2)
-        for (k, pct, v, attr), sw in zip(segs, widths):
-            n = scr.put(y + 1, cx, f"{k}:", C["teal"]) + 1
-            temp_hot = k == "CPU" and t.get("cpu", 0) >= 85
-            if cells:
-                scr.meter(y + 1, cx + n, cells, pct, attr or level(pct))
-            scr.put(y + 1, cx + n + (cells + 1 if cells else 0), v, C["clay"] if temp_hot else C["fg"])
-            cx += sw + gap
-        for k, v in shown:
-            n = scr.put(y + 1, cx, f"{k}:", C["teal"]) + 1
-            scr.put(y + 1, cx + n, v, C["fg"])
-            cx += n + len(v) + gap
-
-    def box_session(self, scr, y, x, h, w, cur, compact=False):
-        scr.box(y, x, h, w, cur["name"] if cur else "Session")
-        ix, lw = x + 2, 10
-        if not cur:
-            scr.put(y + 1, ix, "no claude code session running", C["dim"])
-            return
-        s = cur["session"]
-        busy = cur["status"] == "busy"
-        if busy:
-            pend = list(s.pending.values())
-            doing = pend[-1][1] if pend else (f"last {s.last_tool}" if s.last_tool else "thinking")
-        else:
-            doing = "waiting for you"
-        agents = f"{cur['agents']} running" if cur["agents"] else "none"
-        if cur["agents_today"]:
-            agents += f" · {cur['agents_today']} today"
-        g = git_info(cur["cwd"])
-        if g:
-            repo = g["repo"] + (f" · {g['branch']}" if g["branch"] else "")
-            if g["dirty"]:
-                repo += f" · {g['dirty']} changed"
-        else:
-            repo = "not a git repo"
-        user = github_user()
-        github = f"connected as {user}" if user else "not connected"
-        if g and g["github"]:
-            github += " · remote on github"
-        status = cur["status"] + (f" · {fmt_dur(time.time() - cur['started'])}" if cur["started"] else "")
-        rows = [("Status", status, C["teal"] if busy else C["dim"]),
-                ("Prompt", one_line(s.prompt) or "-", C["fg"] | ITALIC),
-                ("Doing", doing, C["sand"] if busy else C["dim"]),
-                ("Agents", agents, C["fg"] if cur["agents"] else C["dim"]),
-                ("Skills", ", ".join(s.skills[-3:]) if s.skills else "none used", C["fg"] if s.skills else C["dim"]),
-                ("Directory", short_path(cur["cwd"]), C["fg"]),
-                ("Repo", repo, C["fg"] if g else C["dim"]),
-                ("GitHub", github, C["teal"] if user else C["dim"])]
-        if compact:
-            rows = [r for r in rows if r[0] not in ("Skills", "GitHub")]
-        for i, (k, v, attr) in enumerate(rows[:h - 2]):
-            scr.kv(y + 1 + i, ix, k, v, attr, lw, w - 4)
 
     def tab_usage(self, scr, y, x, h, w):
         a = self.a
@@ -2252,7 +2287,7 @@ class App:
         curses.curs_set(0)
         init_colors()
         self.win.keypad(True)
-        self.win.timeout(1000)
+        self.win.timeout(250)  # lets the busy spinner on the Overview turn
         self.tick(force=True)
         while True:
             self.tick()
