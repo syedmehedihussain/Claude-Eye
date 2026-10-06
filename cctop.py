@@ -39,11 +39,14 @@ PALETTE = {
     "sand": "#c9ae86",   # sand-400, warn
     "clay": "#c38b7b",   # clay-400, danger
     "lav": "#a5a0b6",    # lavender-400
+    "bg": "#0c0b0c",     # ink-925, text on highlighted rows
 }
 BASIC = {"fg": curses.COLOR_WHITE, "muted": curses.COLOR_WHITE, "dim": curses.COLOR_WHITE,
          "faint": curses.COLOR_WHITE, "rose": curses.COLOR_MAGENTA, "teal": curses.COLOR_CYAN,
-         "sand": curses.COLOR_YELLOW, "clay": curses.COLOR_RED, "lav": curses.COLOR_BLUE}
+         "sand": curses.COLOR_YELLOW, "clay": curses.COLOR_RED, "lav": curses.COLOR_BLUE,
+         "bg": curses.COLOR_BLACK}
 C = {}
+COLNUM = {}
 
 METRICS = [("all", "all tokens"), ("io", "input + output"), ("out", "output only")]
 TOOL_KEYS = ("description", "command", "file_path", "pattern", "query", "url", "prompt", "skill")
@@ -283,7 +286,8 @@ class Usage:
         s.pending[tid] = (name, summ)
         s.last_tool = summ
         s.tools[name] += 1
-        act = {"ts": ts, "name": name, "summary": summ, "status": "run", "end": None}
+        path = inp.get("file_path") or inp.get("notebook_path")
+        act = {"ts": ts, "name": name, "summary": summ, "status": "run", "end": None, "path": path}
         s.activity.append(act)
         s.inflight[tid] = act
         if name.startswith("mcp__"):
@@ -301,7 +305,6 @@ class Usage:
                              "status": "running", "bg": bool(inp.get("run_in_background"))}
         if name == "TodoWrite" and isinstance(inp.get("todos"), list):
             s.todos = inp["todos"]
-        path = inp.get("file_path") or inp.get("notebook_path")
         if path:
             f = s.files.setdefault(path, {"op": "read", "added": 0, "removed": 0, "n": 0})
             f["ts"] = ts
@@ -862,6 +865,126 @@ def load_projects(live):
     return out
 
 
+_tree_cache = {}
+TREE_SKIP = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", "target",
+             ".next", ".cache", ".mypy_cache", ".pytest_cache", ".idea", ".vscode"}
+
+
+def session_root(cur, s):
+    """The folder the Live tree shows: the repo, else the session dir, else the project it edits."""
+    cwd = cur["cwd"] or s.cwd or HOME
+    home = os.path.realpath(HOME)
+    try:
+        top = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=2).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        top = ""
+    if top and os.path.realpath(top) != home:
+        return os.path.realpath(top)
+    if os.path.realpath(cwd) != home:
+        return os.path.realpath(cwd)
+    # started in ~: show the project it has been editing most recently
+    dirs = project_dirs()
+    best, best_ts = None, None
+    for name, changed in session_projects(s, dirs).items():
+        ts = max((s.files[p].get("ts") or datetime.min for p in changed), default=None)
+        if ts and (best_ts is None or ts > best_ts):
+            best, best_ts = dirs[name][0], ts
+    return os.path.realpath(best) if best else home
+
+
+def _listdir(path):
+    hit = _tree_cache.get(path)
+    if hit and time.time() - hit[0] < 5:
+        return hit[1]
+    try:
+        with os.scandir(path) as it:
+            entries = [(e.name, e.is_dir(follow_symlinks=False)) for e in it if e.name not in TREE_SKIP]
+    except OSError:
+        entries = []
+    entries.sort(key=lambda e: (not e[1], e[0].lower()))
+    _tree_cache[path] = (time.time(), entries)
+    return entries
+
+
+def file_tree(root, touched, active, max_rows=600):
+    """Rows for an indented tree. Shallow folders and folders holding touched files are open."""
+    hot = set(touched) | ({active} if active else set())
+    rows = []
+
+    def walk(path, depth, lasts):
+        entries = _listdir(path)
+        for i, (name, is_dir) in enumerate(entries):
+            if len(rows) >= max_rows:
+                return
+            full = os.path.join(path, name)
+            last = i == len(entries) - 1
+            prefix = "".join("   " if l else "│  " for l in lasts) + ("└─ " if last else "├─ ")
+            holds_hot = is_dir and any(h.startswith(full + os.sep) for h in hot)
+            open_ = is_dir and (depth < 1 or holds_hot) and depth < 6
+            f = touched.get(full)
+            rows.append({"prefix": prefix, "name": name, "dir": is_dir, "collapsed": is_dir and not open_,
+                         "op": f["op"] if f else "", "active": full == active})
+            if open_:
+                walk(full, depth + 1, lasts + [last])
+
+    walk(root, 0, [])
+    return rows
+
+
+_gd_cache = {}
+
+
+def git_details(path):
+    hit = _gd_cache.get(path)
+    if hit and time.time() - hit[0] < 5:
+        return hit[1]
+
+    def git(*args, raw=False):
+        try:
+            out = subprocess.run(["git", "-C", path, *args], capture_output=True, text=True, timeout=3)
+            if out.returncode != 0:
+                return None
+            return out.stdout if raw else out.stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    info = None
+    if path and git("rev-parse", "--show-toplevel"):
+        upstream = git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+        ahead = behind = 0
+        if upstream:
+            counts = (git("rev-list", "--left-right", "--count", "@{u}...HEAD") or "0 0").split()
+            behind, ahead = int(counts[0]), int(counts[1])
+        staged = modified = untracked = 0
+        for line in (git("status", "--porcelain", raw=True) or "").splitlines():  # keep leading spaces
+            if line.startswith("??"):
+                untracked += 1
+                continue
+            staged += line[0] not in " ?"
+            modified += len(line) > 1 and line[1] != " "
+        remote = git("remote", "get-url", "origin") or ""
+        m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", remote)
+        gitdir = git("rev-parse", "--absolute-git-dir") or ""
+        fetch_head = os.path.join(gitdir, "FETCH_HEAD")
+        fetched = ""
+        if os.path.exists(fetch_head):
+            fetched = fmt_dur(time.time() - os.path.getmtime(fetch_head)) + " ago"
+        info = {
+            "branch": git("branch", "--show-current") or "detached",
+            "upstream": upstream or "",
+            "ahead": ahead, "behind": behind,
+            "staged": staged, "modified": modified, "untracked": untracked,
+            "last_commit": git("log", "-1", "--format=%h %s · %cr"),
+            "pushed": git("log", "-g", "-1", "--format=%cr", f"refs/remotes/{upstream}") if upstream else "",
+            "fetched": fetched,
+            "remote": (m[1] + (" on github" if "github.com" in remote else "")) if m else remote,
+            "stash": len((git("stash", "list") or "").splitlines()),
+        }
+    _gd_cache[path] = (time.time(), info)
+    return info
+
+
 # ---------------------------------------------------------------- drawing
 
 VERSION = "0.2.0"
@@ -905,9 +1028,13 @@ def init_colors():
             col = BASIC[name]
         curses.init_pair(i, col, -1)
         C[name] = curses.color_pair(i)
+        COLNUM[name] = col
     if curses.COLORS < 256:
         for name in ("dim", "faint", "muted"):
             C[name] |= curses.A_DIM
+    hl = len(names) + 1
+    curses.init_pair(hl, COLNUM["bg"], COLNUM["sand"])
+    C["hl"] = curses.color_pair(hl) | curses.A_BOLD
 
 
 def nearest_256(r, g, b):
@@ -1374,63 +1501,150 @@ class App:
         self.sel = sids.index(self.sel_sid) if self.sel_sid in sids else 0
         self.sel_sid = sids[self.sel]
         cur = self.live[self.sel]
+        s = cur["session"]
+        root = session_root(cur, s)
+
+        # left: file tree of the project, full height
+        tree_w = min(44, max(26, w * 3 // 10)) if w >= 90 else 0
+        if tree_w:
+            self.lv_tree(scr, y, x, h, tree_w, cur, s, root)
+        rx, rw = x + tree_w + (1 if tree_w else 0), w - tree_w - (1 if tree_w else 0)
 
         # session picker
-        cx = x
+        cx = rx
         for i, row in enumerate(self.live):
             busy = row["status"] == "busy"
-            chip = f" {row['name']} "
-            if cx + len(chip) + 4 > x + w:
+            if cx + len(row["name"]) + 6 > rx + rw:
                 scr.put(y, cx, f"+{len(self.live) - i}", C["dim"])
                 break
             cx += scr.put(y, cx, "●" if busy else "○", C["teal"] if busy else C["dim"])
             if i == self.sel:
                 cx += scr.put(y, cx, "[", C["muted"])
-                cx += scr.put(y, cx, chip.strip(), C["fg"] | curses.A_BOLD)
+                cx += scr.put(y, cx, row["name"], C["fg"] | curses.A_BOLD)
                 cx += scr.put(y, cx, "]", C["muted"]) + 2
             else:
-                cx += scr.put(y, cx, chip, C["teal"]) + 1
-        info = f"session {self.sel + 1} of {len(self.live)}"
-        scr.put(y, x + w - len(info), info, C["dim"])
+                cx += scr.put(y, cx, f" {row['name']} ", C["teal"]) + 1
+        if len(self.live) > 1:
+            info = f"{self.sel + 1} of {len(self.live)}"
+            scr.put(y, rx + rw - len(info), info, C["dim"])
 
-        s = cur["session"]
-        boxes = [  # title, renderer, min height, wanted height
-            ("Session", self.lv_session, 8, 13),
-            ("Now", self.lv_now, 6, 10),
-            ("Tokens", self.lv_tokens, 7, 12),
-            ("Activity", self.lv_activity, 6, 14),
-            ("Tools", self.lv_tools, 5, min(12, len(s.tools) + 4)),
-            ("Files", self.lv_files, 5, min(12, len(s.files) + 4)),
-            ("Agents & skills", self.lv_agents, 6, min(12, len(s.agents) + 6)),
-            ("Process", self.lv_process, 6, 8),
-            ("History", self.lv_turns, 6, 10),
+        # right: session | activity, now (full width), git | agents
+        avail = h - 1
+        top_h = max(6, min(16, avail * 45 // 100))
+        bot_h = max(6, min(12, avail * 30 // 100))
+        now_h = avail - top_h - bot_h
+        if now_h < 5:
+            bot_h = max(4, bot_h - (5 - now_h))
+            now_h = avail - top_h - bot_h
+        half = rw // 2
+        ty = y + 1
+        scr.box(ty, rx, top_h, half, "Session")
+        self.lv_session(scr, ty + 1, rx + 2, top_h - 2, half - 4, cur, s, root)
+        scr.box(ty, rx + half, top_h, rw - half, "Activity")
+        self.lv_activity(scr, ty + 1, rx + half + 2, top_h - 2, rw - half - 4, cur, s)
+
+        ny = ty + top_h
+        scr.box(ny, rx, now_h, rw, "Now")
+        self.lv_now(scr, ny + 1, rx + 2, now_h - 2, rw - 4, cur, s)
+
+        by = ny + now_h
+        g = git_details(root)
+        scr.box(by, rx, bot_h, half, "Git · GitHub")
+        self.lv_git(scr, by + 1, rx + 2, bot_h - 2, half - 4, g)
+        scr.box(by, rx + half, bot_h, rw - half, "Agents & skills")
+        self.lv_agents(scr, by + 1, rx + half + 2, bot_h - 2, rw - half - 4, cur, s)
+
+    def lv_tree(self, scr, y, x, h, w, cur, s, root):
+        scr.box(y, x, h, w)
+        ix, iw = x + 2, w - 4
+        # header: project / folder of the file being worked on
+        active = next((a for a in reversed(s.activity) if a.get("path") and inside(a["path"], [root])), None)
+        active_path = active["path"] if active else None
+        sub = ""
+        if active_path and inside(active_path, [root]):
+            sub = os.path.relpath(os.path.dirname(os.path.realpath(active_path)), root)
+            sub = "" if sub == "." else sub
+        name = os.path.basename(root) or root
+        n = scr.put(y + 1, ix, name, C["dim"])
+        if sub:
+            n += scr.put(y + 1, ix + n, " / ", C["dim"])
+            scr.put(y + 1, ix + n, sub, C["fg"] | curses.A_BOLD, iw - n)
+        else:
+            scr.put(y + 1, ix + n, " / ", C["dim"])
+        scr.put(y + 2, x, "├" + "─" * (w - 2) + "┤", C["muted"])
+
+        rows = file_tree(root, {os.path.realpath(p): f for p, f in s.files.items()},
+                         os.path.realpath(active_path) if active_path else None)
+        room = h - 4
+        if not rows:
+            scr.put(y + 3, ix, "empty folder", C["dim"])
+            return
+        hot = next((i for i, r in enumerate(rows) if r["active"]), 0)
+        start = max(0, min(hot - room // 2, len(rows) - room))
+        for i, row in enumerate(rows[start:start + room]):
+            r = y + 3 + i
+            prefix = row["prefix"]
+            scr.put(r, ix, prefix, C["faint"])
+            px = ix + len(prefix)
+            label = row["name"] + ("/" if row["dir"] and row["collapsed"] else "")
+            if row["active"]:
+                attr = C["hl"]
+                label = f" {label} "
+            elif row["op"] in ("edit", "write"):
+                attr = C["sand"]
+            elif row["op"] == "read":
+                attr = C["teal"]
+            elif row["dir"]:
+                attr = C["fg"] | curses.A_BOLD
+            else:
+                attr = C["muted"]
+            n = scr.put(r, px, label, attr, iw - len(prefix))
+            mark = {"edit": "✎", "write": "+"}.get(row["op"], "")
+            if mark and not row["active"] and px + n + 2 <= ix + iw:
+                scr.put(r, px + n + 1, mark, C["sand"])
+        if start + room < len(rows):
+            more = f"+{len(rows) - start - room} more"
+            scr.put(y + h - 1, x + w - len(more) - 2, more, C["dim"])
+
+    def lv_git(self, scr, y, x, h, w, g):
+        if not g:
+            scr.put(y, x, "not a git repo", C["dim"])
+            user = github_user()
+            if user and h > 1:
+                scr.kv(y + 1, x, "GitHub", f"connected as {user}", C["teal"], 9, w)
+            return
+        if g["upstream"]:
+            ahead, behind = g["ahead"], g["behind"]
+            if not ahead and not behind:
+                sync, sattr = "up to date", C["teal"]
+            else:
+                bits = ([f"↑{ahead} to push"] if ahead else []) + ([f"↓{behind} to pull"] if behind else [])
+                sync, sattr = " · ".join(bits), C["sand"] if behind else C["rose"]
+        else:
+            sync, sattr = "no upstream, not pushed yet", C["sand"]
+        changes = g["staged"], g["modified"], g["untracked"]
+        if any(changes):
+            ch = " · ".join(f"{n} {label}" for n, label in zip(changes, ("staged", "modified", "untracked")) if n)
+            cattr = C["sand"]
+        else:
+            ch, cattr = "clean", C["teal"]
+        user = github_user()
+        rows = [
+            ("Branch", g["branch"] + (f" → {g['upstream']}" if g["upstream"] else ""), C["fg"] | curses.A_BOLD),
+            ("Sync", sync, sattr),
+            ("Changes", ch, cattr),
+            ("Commit", g["last_commit"] or "-", None),
+            ("Pushed", g["pushed"] or "never", None if g["pushed"] else C["dim"]),
+            ("Fetched", g["fetched"] or "never", None if g["fetched"] else C["dim"]),
+            ("Remote", g["remote"] or "none", None if g["remote"] else C["dim"]),
+            ("GitHub", f"connected as {user}" if user else "not connected", C["teal"] if user else C["dim"]),
         ]
-        if s.todos:
-            boxes.insert(2, ("Todos", self.lv_todos, 4, min(12, len(s.todos) + 3)))
+        if g["stash"]:
+            rows.insert(3, ("Stash", f"{g['stash']} saved", C["lav"]))
+        for i, (k, v, attr) in enumerate(rows[:h]):
+            scr.kv(y + i, x, k, v, attr, 9, w)
 
-        ncol = 3 if w >= 150 else 2
-        top, bottom = y + 1, y + h
-        colw = [(w - (ncol - 1)) // ncol] * ncol
-        colw[-1] = w - sum(colw[:-1]) - (ncol - 1)
-        colx = [x + sum(colw[:i]) + i for i in range(ncol)]
-        cursor = [top] * ncol
-        placed = [[] for _ in range(ncol)]
-        for title, fn, hmin, hwant in boxes:
-            order = sorted(range(ncol), key=lambda c: cursor[c])
-            for c in order:
-                if cursor[c] + hmin <= bottom:
-                    bh = min(hwant, bottom - cursor[c])
-                    placed[c].append([title, fn, cursor[c], bh])
-                    cursor[c] += bh
-                    break
-        for c in range(ncol):
-            if placed[c]:
-                placed[c][-1][3] = bottom - placed[c][-1][2]  # last box fills the column
-            for title, fn, by, bh in placed[c]:
-                scr.box(by, colx[c], bh, colw[c], title)
-                fn(scr, by + 1, colx[c] + 2, bh - 2, colw[c] - 4, cur, s)
-
-    def lv_session(self, scr, y, x, h, w, cur, s):
+    def lv_session(self, scr, y, x, h, w, cur, s, root=None):
         busy = cur["status"] == "busy"
         since = f" for {fmt_dur(time.time() - cur['status_since'])}" if cur["status_since"] else ""
         started = datetime.fromtimestamp(cur["started"]) if cur["started"] else s.first_ts
@@ -1451,19 +1665,22 @@ class App:
             ("Model", model, C["rose"]),
             ("Mode", s.perm_mode or "default", C["sand"] if s.perm_mode in ("auto", "bypassPermissions") else None),
             ("Directory", short_path(cur["cwd"]), None),
+            ("Project", short_path(root) if root else "-", C["fg"] | curses.A_BOLD),
             ("Branch", (g["branch"] if g and g["branch"] else s.branch) or "-", None),
             ("Repo", repo, None if g else C["dim"]),
             ("GitHub", f"connected as {user}" if user else "not connected", C["teal"] if user else C["dim"]),
             ("Version", " · ".join(b for b in (s.version, cur["entrypoint"] or s.entrypoint, cur["kind"]) if b), C["dim"]),
             ("ID", f"{s.sid[:8]} · pid {cur['pid']}", C["dim"]),
         ]
+        if root:  # branch, repo and GitHub live in the Git box next door
+            rows = [r for r in rows if r[0] not in ("Branch", "Repo", "GitHub")]
         for i, (k, v, attr) in enumerate(rows[:h]):
             scr.kv(y + i, x, k, v, attr, 10, w)
 
     def lv_now(self, scr, y, x, h, w, cur, s):
         busy = cur["status"] == "busy"
         r = y
-        pend = [a for a in s.inflight.values()]
+        pend = list(s.inflight.values())
         if busy and pend:
             act = pend[-1]
             el = f"  {fmt_secs((datetime.now() - act['ts']).total_seconds())}" if act["ts"] else ""
@@ -1475,20 +1692,46 @@ class App:
         else:
             scr.kv(r, x, "Doing", "waiting for you", C["dim"], 8, w)
         r += 1
-        prompt_lines = max(1, (h - 2) // 2 + (h - 2) % 2)
-        for label, text, attr, n in (("Prompt", s.prompt, C["fg"] | ITALIC, prompt_lines),
-                                     ("Recap", s.recap, C["dim"], h - 2 - prompt_lines)):
-            if r >= y + h or n <= 0:
-                break
+
+        def block(label, text, attr, limit):
+            nonlocal r
+            if r >= y + h or limit <= 0:
+                return
             scr.kv(r, x, label, lw=8)
-            lines = textwrap.wrap(one_line(text, 2000), max(10, w - 9)) or ["-"]
-            if len(lines) > n:
-                lines = lines[:n]
+            lines = textwrap.wrap(one_line(text, 4000), max(10, w - 9)) or ["-"]
+            if len(lines) > limit:
+                lines = lines[:limit]
                 lines[-1] = lines[-1][:max(0, w - 10)] + "…"
             for ln in lines:
                 if r >= y + h:
-                    break
+                    return
                 scr.put(r, x + 9, ln, attr, w - 9)
+                r += 1
+
+        room = h - 1
+        earlier = list(s.prompts)[:-1][::-1]
+        todo_rows = min(len(s.todos), 8)
+        # prompt gets the most room, recap a third; earlier prompts and todos take what is left
+        block("Prompt", s.prompt, C["fg"] | ITALIC, max(1, min(8, room // 2)))
+        if s.recap:
+            block("Recap", s.recap, C["dim"], max(1, min(4, (y + h - r) // 3)))
+        if s.todos and r + 1 < y + h:
+            scr.kv(r, x, "Todos", lw=8)
+            for t in s.todos[:min(todo_rows, y + h - r)]:
+                st = t.get("status")
+                mark, attr = {"completed": ("✓", C["teal"]), "in_progress": ("›", C["sand"])}.get(st, ("·", C["dim"]))
+                scr.put(r, x + 9, mark, attr)
+                text = t.get("activeForm") if st == "in_progress" and t.get("activeForm") else t.get("content", "")
+                scr.put(r, x + 11, text, C["fg"] if st == "in_progress" else C["muted"], w - 11)
+                r += 1
+        if earlier and r + 1 < y + h:
+            scr.kv(r, x, "Earlier", lw=8)
+            for ts, text in earlier:
+                if r >= y + h:
+                    break
+                stamp = ts.strftime("%H:%M") if ts else "--:--"
+                scr.put(r, x + 9, stamp, C["dim"])
+                scr.put(r, x + 15, one_line(text), C["muted"] | ITALIC, w - 15)
                 r += 1
 
     def lv_todos(self, scr, y, x, h, w, cur, s):
@@ -1621,6 +1864,11 @@ class App:
             scr.put(r, x + 4 + n, a["desc"], C["fg"], w - 4 - n)
             r += 1
         r = max(r, y + h - 3)
+        if r + 2 >= y + h:  # short box: keep skills, drop the rest
+            r = min(r, y + h - 1)
+            scr.kv(r, x, "Skills", ", ".join(reversed(s.skills)) if s.skills else "none used",
+                   C["fg"] if s.skills else C["dim"], 9, w)
+            return
         scr.kv(r, x, "Skills", ", ".join(reversed(s.skills)) if s.skills else "none used",
                C["fg"] if s.skills else C["dim"], 9, w)
         mcp = ", ".join(f"{k} ×{v}" for k, v in sorted(s.mcp.items(), key=lambda kv: -kv[1]))
