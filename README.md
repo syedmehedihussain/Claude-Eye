@@ -9,7 +9,7 @@ Single Python file, standard library only, nothing to install beyond Python 3.9+
 
 | Key | Tab | What it shows |
 |-----|-----|---------------|
-| `1` | Overview | 5-hour and weekly limit bars (what is left, turning red when low), current session, repo and GitHub status, a one-line system strip |
+| `1` | Overview | 5-hour and weekly limit bars (percent used, turning red as you near the limit), current session, repo and GitHub status, a one-line system strip |
 | `2` | Projects | Every project in `~/Projects`: status, where you left off, next steps, docs and recent sessions |
 | `3` | Live | Everything about each running session: activity feed, tokens, tools, files touched, agents, skills, MCP servers, process stats, prompt history |
 | `4` | Usage | Tokens by hour, last 7 days, models and projects |
@@ -49,7 +49,7 @@ Everything is read locally unless noted.
 - **Token usage and sessions:** Claude Code's transcripts in `~/.claude/projects/**/*.jsonl`,
   read incrementally, so only new lines are parsed on each refresh.
 - **Live sessions:** `~/.claude/sessions/*.json` plus `/proc` for process stats.
-- **Plan limits:** the endpoint Claude Code's own `/usage` command uses,
+- **Plan limits (shown as percent used):** the endpoint Claude Code's own `/usage` command uses,
   `https://api.anthropic.com/api/oauth/usage`, called with the OAuth token Claude Code already
   stores in `~/.claude/.credentials.json`. The token is only ever sent to `api.anthropic.com`.
   Results are cached in `~/.cache/cctop/limits.json` and shared by every cctop window: at most
