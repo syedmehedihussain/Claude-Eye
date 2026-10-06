@@ -28,23 +28,33 @@ PROJECTS = os.path.join(CLAUDE, "projects")
 SESSIONS = os.path.join(CLAUDE, "sessions")
 HOME = os.path.expanduser("~")
 
-# Last Horizon tokens (~/Projects/smh-design-system/tokens/tokens.css)
-PALETTE = {
-    "fg": "#e2dddc",     # ink-100
-    "muted": "#8a8588",  # ink-400
-    "dim": "#6e6769",    # ink-500
-    "faint": "#3a3437",  # ink-700
-    "rose": "#b59790",   # rose-400, accent
-    "teal": "#87a9b0",   # teal-400, ok
-    "sand": "#c9ae86",   # sand-400, warn
-    "clay": "#c38b7b",   # clay-400, danger
-    "lav": "#a5a0b6",    # lavender-400
-    "bg": "#0c0b0c",     # ink-925, text on highlighted rows
+# Themes. Keys are roles: fg text, muted/dim secondary text, faint empty squares and rules,
+# line box borders, teal success (green), clay danger (red), sand warning, rose accent,
+# lav extra, bg background. CCTOP_THEME picks one; "github" paints its own background.
+THEMES = {
+    "github": {  # GitHub dark
+        "paint": True,
+        "colors": {
+            "fg": "#e6edf3", "muted": "#8b949e", "dim": "#6e7681", "faint": "#30363d",
+            "line": "#30363d", "rose": "#58a6ff", "teal": "#3fb950", "sand": "#d29922",
+            "clay": "#f85149", "lav": "#bc8cff", "bg": "#0d1117",
+        },
+    },
+    "horizon": {  # Last Horizon (~/Projects/smh-design-system/tokens/tokens.css)
+        "paint": False,
+        "colors": {
+            "fg": "#e2dddc", "muted": "#8a8588", "dim": "#6e6769", "faint": "#3a3437",
+            "line": "#8a8588", "rose": "#b59790", "teal": "#87a9b0", "sand": "#c9ae86",
+            "clay": "#c38b7b", "lav": "#a5a0b6", "bg": "#0c0b0c",
+        },
+    },
 }
+THEME = THEMES.get(os.environ.get("CCTOP_THEME", "github"), THEMES["github"])
+PALETTE = THEME["colors"]
 BASIC = {"fg": curses.COLOR_WHITE, "muted": curses.COLOR_WHITE, "dim": curses.COLOR_WHITE,
-         "faint": curses.COLOR_WHITE, "rose": curses.COLOR_MAGENTA, "teal": curses.COLOR_CYAN,
-         "sand": curses.COLOR_YELLOW, "clay": curses.COLOR_RED, "lav": curses.COLOR_BLUE,
-         "bg": curses.COLOR_BLACK}
+         "faint": curses.COLOR_WHITE, "line": curses.COLOR_WHITE, "rose": curses.COLOR_MAGENTA,
+         "teal": curses.COLOR_GREEN, "sand": curses.COLOR_YELLOW, "clay": curses.COLOR_RED,
+         "lav": curses.COLOR_BLUE, "bg": curses.COLOR_BLACK}
 C = {}
 COLNUM = {}
 
@@ -1036,16 +1046,17 @@ def init_colors():
         if curses.COLORS >= 256 and curses.can_change_color():
             idx = 232 - len(names) + i  # borrow a few cube slots; ncurses restores them on exit
             curses.init_color(idx, r * 1000 // 255, g * 1000 // 255, b * 1000 // 255)
-            col = idx
+            COLNUM[name] = idx
         elif curses.COLORS >= 256:
-            col = nearest_256(r, g, b)
+            COLNUM[name] = nearest_256(r, g, b)
         else:
-            col = BASIC[name]
-        curses.init_pair(i, col, -1)
+            COLNUM[name] = BASIC[name]
+    back = COLNUM["bg"] if THEME["paint"] else -1
+    for i, name in enumerate(names, start=1):
+        curses.init_pair(i, COLNUM[name], back)
         C[name] = curses.color_pair(i)
-        COLNUM[name] = col
     if curses.COLORS < 256:
-        for name in ("dim", "faint", "muted"):
+        for name in ("dim", "faint", "muted", "line"):
             C[name] |= curses.A_DIM
     hl = len(names) + 1
     curses.init_pair(hl, COLNUM["bg"], COLNUM["sand"])
@@ -1089,7 +1100,7 @@ class Screen:
         return self.put(y, x + max(0, (w - len(s)) // 2), s, attr, w)
 
     def box(self, y, x, h, w, title=None):
-        b = C["muted"]
+        b = C["line"]
         self.put(y, x, "┌" + "─" * (w - 2) + "┐", b)
         for r in range(1, h - 1):
             self.put(y + r, x, "│", b)
@@ -1141,10 +1152,10 @@ class Screen:
 
 
 SPARK = " ▁▂▃▄▅▆▇█"
-# one square = the octant filling the middle half of a cell (U+1CD33), then a space. It is
-# centred on the text line; foot, kitty and ghostty draw it themselves. Squares sit two
-# columns apart. CCTOP_SQUARE overrides it (two columns, e.g. "■ ") for other terminals.
-SQ = os.environ.get("CCTOP_SQUARE", "\U0001CD33 ")[:2].ljust(2)
+# one square = the Nerd Font icon md-square_rounded (U+F14FB), then a space: rounded corners,
+# centred on the text, and a little wider than a column so the gap stays small. Squares sit
+# two columns apart. CCTOP_SQUARE overrides it (two columns, e.g. "■ " without a Nerd Font).
+SQ = os.environ.get("CCTOP_SQUARE", "\U000F14FB ")[:2].ljust(2)
 
 
 def sq_count(cols):
@@ -1669,7 +1680,7 @@ class App:
             scr.put(y + 1, ix + n, sub, C["fg"] | curses.A_BOLD, iw - n)
         else:
             scr.put(y + 1, ix + n, " / ", C["dim"])
-        scr.put(y + 2, x, "├" + "─" * (w - 2) + "┤", C["muted"])
+        scr.put(y + 2, x, "├" + "─" * (w - 2) + "┤", C["line"])
 
         rows = file_tree(root, {os.path.realpath(p): f for p, f in s.files.items()},
                          os.path.realpath(active_path) if active_path else None)
@@ -1728,7 +1739,7 @@ class App:
                 scr.put(r, cx, "✓ up to date", C["teal"])
             else:
                 end = x + w
-                for arrow, n, attr, word in (("↑", g["ahead"], C["rose"], "push"), ("↓", g["behind"], C["sand"], "pull")):
+                for arrow, n, attr, word in (("↑", g["ahead"], C["sand"], "push"), ("↓", g["behind"], C["lav"], "pull")):
                     if not n or cx >= end:
                         continue
                     cx += scr.put(r, cx, f"{arrow}{n} ", attr | curses.A_BOLD, end - cx)
@@ -2287,6 +2298,8 @@ class App:
     def run(self):
         curses.curs_set(0)
         init_colors()
+        if THEME["paint"]:
+            self.win.bkgd(" ", C["fg"])  # fill every empty cell with the theme background
         self.win.keypad(True)
         self.win.timeout(250)  # lets the busy spinner on the Overview turn
         self.tick(force=True)

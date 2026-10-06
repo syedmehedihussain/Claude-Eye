@@ -70,13 +70,15 @@ Setup and file formats: [docs/project-notes.md](docs/project-notes.md).
 
 ## Colors
 
-The palette comes from the Last Horizon design system. On terminals that allow redefining
-colors, cctop sets the exact values and restores them on exit; otherwise it picks the nearest
-256-color match, and falls back to the 8 basic colors.
+The default theme is GitHub dark: a near-black background, green for good, red for
+deletions and danger, amber for warnings and blue for accents. `CCTOP_THEME=horizon` switches
+to the Last Horizon palette on the terminal's own background. On terminals that allow
+redefining colors, cctop sets the exact values and restores them on exit; otherwise it picks
+the nearest 256-color match, and falls back to the 8 basic colors.
 
-Bars are drawn with the octant character U+1CD33 (the middle half of a cell), which foot,
-kitty and ghostty render themselves so it sits centred on the text. On a terminal that shows
-a box or a blank instead, set another two-column square, for example `CCTOP_SQUARE="■ " cctop`.
+Bars are drawn with the Nerd Font icon `md-square_rounded` (U+F14FB): rounded corners,
+centred on the text, with a small gap. Without a Nerd Font it shows as a box; set another
+two-column square instead, for example `CCTOP_SQUARE="■ " cctop`.
 
 ## Limits of the numbers
 
