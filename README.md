@@ -80,6 +80,14 @@ Bars are drawn with the Nerd Font icon `md-square_rounded` (U+F14FB): rounded co
 centred on the text, with a small gap. Without a Nerd Font it shows as a box; set another
 two-column square instead, for example `CCTOP_SQUARE="■ " cctop`.
 
+## Context reminders
+
+Each session's context is its latest request size (input plus cache tokens) against the
+model's window: 1M for current models, 200K for Haiku 4.5. At 40% the Overview shows a reminder
+at the bottom and the Live tab's Session box shows it in red ("/clear before your next task");
+at 70% it asks for `/clear` or `/compact` now. Change the thresholds with `CCTOP_CTX_WARN` and
+`CCTOP_CTX_URGENT` (fractions, for example `0.5`).
+
 ## Limits of the numbers
 
 - "All tokens" is mostly cache reads, which are cheap and count far less toward plan limits.

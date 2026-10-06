@@ -90,6 +90,32 @@ def fmt_secs(sec):
     return fmt_dur(sec)
 
 
+# Context windows (tokens). Every current model has 1M except Haiku 4.5 (200K).
+CTX_WARN = float(os.environ.get("CCTOP_CTX_WARN", "0.40"))      # remind: clear when you switch tasks
+CTX_URGENT = float(os.environ.get("CCTOP_CTX_URGENT", "0.70"))  # warn: clear or compact now
+
+
+def context_window(model, peak=0):
+    m = (model or "").lower()
+    window = 200_000 if "haiku" in m else 1_000_000
+    if "[1m]" in m:
+        window = 1_000_000
+    return max(window, peak)  # never report more than 100% for a model we guessed wrong
+
+
+def fmt_window(n):
+    return f"{n // 1_000_000}M" if n % 1_000_000 == 0 else fmt_n(n)
+
+
+def context_state(s):
+    """(fraction of the window in use, window size, severity 0 ok / 1 remind / 2 urgent)."""
+    if not s.ctx:
+        return 0.0, context_window(s.model), 0
+    window = context_window(s.model, s.ctx_peak)
+    frac = s.ctx / window
+    return frac, window, 2 if frac >= CTX_URGENT else 1 if frac >= CTX_WARN else 0
+
+
 def short_model(m):
     hit = re.match(r"claude-([a-z]+)-(\d+)-(\d+)", m or "")
     if hit:
@@ -1123,7 +1149,7 @@ class Screen:
             cx += self.put(y, cx, "]", C["muted"]) + 1
 
     def kv(self, y, x, label, value="", attr=None, lw=0, maxw=None):
-        n = self.put(y, x, f"{label}:".ljust(lw), C["teal"]) + 1
+        n = self.put(y, x, (f"{label}:" if label else "").ljust(lw), C["teal"]) + 1
         if value != "":
             room = None if maxw is None else maxw - n
             self.put(y, x + n, value, C["fg"] if attr is None else attr, room)
@@ -1319,7 +1345,8 @@ class App:
         cx = x + (w - cw) // 2
         live = self.live[:max(1, min(len(self.live), 5))]
         logo = logo_rows("cctop.")
-        body = 1 + 4 + 1 + 1 + max(1, len(live)) + 1 + 1 + 1  # headers, rows and gaps
+        notes = self.context_notes()
+        body = 1 + 4 + 1 + 1 + max(1, len(live)) + 1 + 1 + 1 + (1 + len(notes) if notes else 0)
         show_logo = h >= body + len(logo) + 2
         total = body + (len(logo) + 2 if show_logo else 0)
         r = y + max(0, (h - total) // 2)
@@ -1334,7 +1361,28 @@ class App:
         r = self.ov_header(scr, r + 1, cx, cw, "live", f"{len(self.live)} session{'s' * (len(self.live) != 1)}")
         r = self.ov_live(scr, r, cx, cw, live)
         r = self.ov_header(scr, r + 1, cx, cw, "system", self.sys.host)
-        self.ov_system(scr, r, cx, cw)
+        r = self.ov_system(scr, r, cx, cw)
+        for text, attr in notes:
+            r += 1
+            if r >= y + h:
+                break
+            scr.center(r, cx, cw, text, attr)
+
+    def context_notes(self):
+        """One reminder line per live session whose context is getting long."""
+        out = []
+        names = [self.project_name(row) for row in self.live]
+        for row, name in zip(self.live, names):
+            frac, window, sev = context_state(row["session"])
+            if not sev:
+                continue
+            label = f"{name} ({row['name']})" if names.count(name) > 1 else name
+            used = f"{fmt_n(row['session'].ctx)} of {fmt_window(window)}, {100 * frac:.0f}%"
+            if sev == 2:
+                out.append((f"{label} context {used} · /clear or /compact now", C["clay"] | curses.A_BOLD))
+            else:
+                out.append((f"{label} context {used} · /clear before the next task", C["sand"]))
+        return out[:3]
 
     def ov_header(self, scr, y, x, w, label, note=""):
         n = scr.put(y, x, label, C["dim"])
@@ -1823,6 +1871,7 @@ class App:
         rows = [
             ("Title", s.title or "untitled", C["fg"] | curses.A_BOLD),
             ("Status", cur["status"] + since, C["teal"] if busy else C["dim"]),
+            *self.context_rows(s),
             ("Started", f"{started:%H:%M} · {fmt_dur((datetime.now() - started).total_seconds())} ago"
              if started else "-", None),
             ("Model", model, C["rose"]),
@@ -1839,6 +1888,18 @@ class App:
             rows = [r for r in rows if r[0] not in ("Branch", "Repo", "GitHub")]
         for i, (k, v, attr) in enumerate(rows[:h]):
             scr.kv(y + i, x, k, v, attr, 10, w)
+
+    def context_rows(self, s):
+        frac, window, sev = context_state(s)
+        if not s.ctx:
+            return [("Context", "-", C["dim"])]
+        text = f"{fmt_n(s.ctx)} of {fmt_window(window)} · {100 * frac:.0f}% full"
+        rows = [("Context", text, C["clay"] if sev else C["fg"])]
+        if sev == 2:
+            rows.append(("", "/clear or /compact now", C["clay"] | curses.A_BOLD))
+        elif sev == 1:
+            rows.append(("", "/clear before your next task", C["clay"]))
+        return rows
 
     def lv_now(self, scr, y, x, h, w, cur, s):
         busy = cur["status"] == "busy"
