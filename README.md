@@ -74,6 +74,10 @@ The palette comes from the Last Horizon design system. On terminals that allow r
 colors, cctop sets the exact values and restores them on exit; otherwise it picks the nearest
 256-color match, and falls back to the 8 basic colors.
 
+Bars are drawn with the octant character U+1CD33 (the middle half of a cell), which foot,
+kitty and ghostty render themselves so it sits centred on the text. On a terminal that shows
+a box or a blank instead, set another two-column square, for example `CCTOP_SQUARE="■ " cctop`.
+
 ## Limits of the numbers
 
 - "All tokens" is mostly cache reads, which are cheap and count far less toward plan limits.

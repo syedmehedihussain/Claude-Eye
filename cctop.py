@@ -1141,9 +1141,10 @@ class Screen:
 
 
 SPARK = " ▁▂▃▄▅▆▇█"
-# one square = a lower half block plus a lower-left quadrant: 1.5 columns of fill, half a
-# column of gap, half the text height. Squares sit two columns apart.
-SQ = "▄▖"
+# one square = the octant filling the middle half of a cell (U+1CD33), then a space. It is
+# centred on the text line; foot, kitty and ghostty draw it themselves. Squares sit two
+# columns apart. CCTOP_SQUARE overrides it (two columns, e.g. "■ ") for other terminals.
+SQ = os.environ.get("CCTOP_SQUARE", "\U0001CD33 ")[:2].ljust(2)
 
 
 def sq_count(cols):
