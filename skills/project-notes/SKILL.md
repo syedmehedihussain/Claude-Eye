@@ -70,6 +70,16 @@ for every small edit.
 - **Next steps:** a short checklist (`- [ ]` / `- [x]`). Tick finished items, drop stale ones,
   put the most important first. Each item should be concrete enough to start on.
 
+Write "What we are building" and "Where we left off" in ASD-STE100 Simplified Technical English:
+
+- One topic per sentence. Keep sentences to 20 words or fewer.
+- Use the active voice and simple tenses (present, past, future).
+- Use simple, common words, and use one word for one meaning. Do not use slang or idioms.
+- Do not stack more than three nouns together ("the notes of the project", not
+  "project session note record").
+- Use articles ("the", "a"). Use a list for three or more parallel items.
+- Keep paragraphs to six sentences or fewer, with a blank line between them.
+
 Edit in place with small edits. Never rewrite the file from scratch, never delete it.
 
 ## 4. Write documents when they come up
