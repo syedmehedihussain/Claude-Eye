@@ -11,8 +11,8 @@ Single Python file, standard library only, nothing to install beyond Python 3.9+
 |-----|-----|---------------|
 | `1` | Overview | The logo and three quiet sections: limits (5h and weekly percent used, reset times, a time track and where the current pace ends up), live sessions by project, and a one-line system summary |
 | `2` | Projects | Every project in `~/Projects`: status, what you are building, where you left off, next steps, docs, and commit and push activity with a heatmap |
-| `3` | Live | Everything about each running session: activity feed, tokens, tools, files touched, agents, skills, MCP servers, process stats, prompt history |
-| `4` | Usage | Tokens by hour, last 7 days, models and projects |
+| `3` | Live | Each running session: the project's file tree with the files Claude touched, session details and context size, an activity feed, what it is doing now (prompt, agents, skills, MCP servers, recap, todos, earlier prompts), git status and plan limits |
+| `4` | Usage | Tokens by hour, last 7 days, by model and by project |
 | `5` | System | CPU, memory, swap, disk, battery, temperatures, fan, load, short history graphs |
 
 ## Install
@@ -48,7 +48,7 @@ Everything is read locally unless noted.
 
 - **Token usage and sessions:** Claude Code's transcripts in `~/.claude/projects/**/*.jsonl`,
   read incrementally, so only new lines are parsed on each refresh.
-- **Live sessions:** `~/.claude/sessions/*.json` plus `/proc` for process stats.
+- **Live sessions:** `~/.claude/sessions/*.json`, with `/proc` to check that each one is still running.
 - **Plan limits (shown as percent used):** the endpoint Claude Code's own `/usage` command uses,
   `https://api.anthropic.com/api/oauth/usage`, called with the OAuth token Claude Code already
   stores in `~/.claude/.credentials.json`. The token is only ever sent to `api.anthropic.com`.
@@ -86,7 +86,7 @@ Each session's context is its latest request size (input plus cache tokens) agai
 model's window: 1M for current models, 200K for Haiku 4.5. At 40% the Overview shows a reminder
 at the bottom and the Live tab's Session box shows it in red ("/clear before your next task");
 at 70% it asks for `/clear` or `/compact` now. Change the thresholds with `CCTOP_CTX_WARN` and
-`CCTOP_CTX_URGENT` (fractions, for example `0.5`).
+`CCTOP_CTX_URGENT` (for example `0.5` or `50%`).
 
 ## Limits of the numbers
 

@@ -6,6 +6,7 @@ session files (~/.claude/sessions/*.json). Standard library only.
 """
 
 import curses
+import fcntl
 import glob
 import json
 import locale
@@ -91,8 +92,19 @@ def fmt_secs(sec):
 
 
 # Context windows (tokens). Every current model has 1M except Haiku 4.5 (200K).
-CTX_WARN = float(os.environ.get("CCTOP_CTX_WARN", "0.40"))      # remind: clear when you switch tasks
-CTX_URGENT = float(os.environ.get("CCTOP_CTX_URGENT", "0.70"))  # warn: clear or compact now
+def env_fraction(name, default):
+    """A 0-1 fraction from the environment; "40", "40%" and "0.4" all work, junk falls back."""
+    raw = os.environ.get(name, "").strip().rstrip("%")
+    try:
+        v = float(raw)
+    except ValueError:
+        return default
+    v = v / 100 if v > 1 else v
+    return v if 0 < v <= 1 else default
+
+
+CTX_WARN = env_fraction("CCTOP_CTX_WARN", 0.40)      # remind: clear when you switch tasks
+CTX_URGENT = env_fraction("CCTOP_CTX_URGENT", 0.70)  # warn: clear or compact now
 
 
 def context_window(model, peak=0):
@@ -166,7 +178,6 @@ class Session:
         self.first_prompt = ""
         self.recap = ""
         self.model = ""
-        self.models = defaultdict(int)
         self.cwd = ""
         self.cwds = set()
         self.ctx = 0
@@ -184,21 +195,13 @@ class Session:
         self.first_ts = None
         self.last_ts = None
         self.n_prompts = 0
-        self.n_replies = 0
-        self.tokens = [0, 0, 0, 0, 0]  # input, output, cache write, cache read, thinking
-        self.think_ms = 0
-        self.turns = []            # turn durations, ms
-        self.tools = defaultdict(int)
-        self.tool_errors = 0
+        self.tokens = [0, 0, 0, 0]  # input, output, cache write, cache read
         self.mcp = defaultdict(int)
         self.web = 0
         self.activity = deque(maxlen=200)  # dicts: ts, name, summary, status, end
         self.inflight = {}         # tool_use id -> activity dict
         self.files = {}            # path -> {op, added, removed, ts, n}
-        self.added = 0
-        self.removed = 0
         self.todos = []
-        self.cost = None
 
 
 class Usage:
@@ -238,6 +241,8 @@ class Usage:
             return
         self.offsets[path] = off + end + 1
         rel = os.path.relpath(path, PROJECTS).split(os.sep)
+        if len(rel) < 2:
+            return  # a stray file outside any project folder
         sid = rel[1].removesuffix(".jsonl")
         sub = len(rel) > 2
         for line in chunk[:end].splitlines():
@@ -262,13 +267,8 @@ class Usage:
         if kind == "permission-mode":
             s.perm_mode = d.get("permissionMode") or s.perm_mode
             return
-        if kind == "cost-state":
-            s.cost = d
-            return
         if kind == "system":
-            if d.get("subtype") == "turn_duration" and d.get("durationMs"):
-                s.turns.append(d["durationMs"])
-            elif d.get("subtype") == "away_summary" and d.get("content"):
+            if d.get("subtype") == "away_summary" and d.get("content"):
                 s.recap = d["content"]
             return
         if kind not in ("assistant", "user"):
@@ -309,7 +309,6 @@ class Usage:
                     s.n_prompts += 1
             return
 
-        s.think_ms += d.get("thinkingDurationMs") or 0
         if isinstance(content, list):
             for b in content:
                 if isinstance(b, dict) and b.get("type") == "tool_use":
@@ -321,7 +320,6 @@ class Usage:
         summ = tool_summary(name, inp)
         s.pending[tid] = (name, summ)
         s.last_tool = summ
-        s.tools[name] += 1
         path = inp.get("file_path") or inp.get("notebook_path")
         act = {"ts": ts, "name": name, "summary": summ, "status": "run", "end": None, "path": path}
         s.activity.append(act)
@@ -358,8 +356,6 @@ class Usage:
                 f["op"] = "write" if name == "Write" and f["op"] == "read" else "edit"
             f["added"] += add
             f["removed"] += rem
-            s.added += add
-            s.removed += rem
 
     def tool_done(self, s, b, ts):
         tid = b.get("tool_use_id")
@@ -369,8 +365,6 @@ class Usage:
         if act:
             act["status"] = "err" if err else "ok"
             act["end"] = ts
-        if err:
-            s.tool_errors += 1
         if tid in s.agents:
             text = str(b.get("content"))[:400].lower()
             s.agents[tid]["status"] = "error" if err else (
@@ -390,15 +384,12 @@ class Usage:
         cw = u.get("cache_creation_input_tokens", 0) or 0
         cr = u.get("cache_read_input_tokens", 0) or 0
         out = u.get("output_tokens", 0) or 0
-        think = (u.get("output_tokens_details") or {}).get("thinking_tokens", 0) or 0
-        for i, v in enumerate((inp, out, cw, cr, think)):
+        for i, v in enumerate((inp, out, cw, cr)):
             s.tokens[i] += v
-        s.models[model] += inp + out + cw + cr
         if not sub:
             s.model = model or s.model
             s.ctx = inp + cw + cr
             s.ctx_peak = max(s.ctx_peak, s.ctx)
-            s.n_replies += 1
         ts = parse_ts(d.get("timestamp"))
         if ts:
             self.events.append((ts, model, s.cwd, sid, inp, out, cw, cr))
@@ -600,51 +591,6 @@ def git_activity(cwd, days=371):
 
 # ---------------------------------------------------------------- system data
 
-_proc_prev = {}
-CLK = os.sysconf("SC_CLK_TCK")
-
-
-def proc_info(pid):
-    """CPU, memory, threads and child processes of one pid, from /proc."""
-    try:
-        with open(f"/proc/{pid}/stat") as f:
-            fields = f.read().rsplit(")", 1)[1].split()
-        status = read(f"/proc/{pid}/status")
-        fds = len(os.listdir(f"/proc/{pid}/fd"))
-    except OSError:
-        return None
-    ticks = int(fields[11]) + int(fields[12])
-    now = time.time()
-    prev = _proc_prev.get(pid)
-    cpu = 100 * (ticks - prev[0]) / CLK / (now - prev[1]) if prev and now > prev[1] else 0.0
-    if not prev or now - prev[1] >= 1.5:
-        _proc_prev[pid] = (ticks, now)
-    elif prev:
-        cpu = _proc_prev.get((pid, "cpu"), cpu)
-    _proc_prev[(pid, "cpu")] = cpu
-    rss = re.search(r"VmRSS:\s+(\d+)", status)
-    uptime = float(read("/proc/uptime", "0").split()[0]) - int(fields[19]) / CLK
-
-    parents = defaultdict(list)
-    names = {}
-    for st in glob.glob("/proc/[0-9]*/stat"):
-        try:
-            with open(st) as f:
-                raw = f.read()
-        except OSError:
-            continue
-        cpid = int(st.split("/")[2])
-        names[cpid] = raw[raw.find("(") + 1:raw.rfind(")")]
-        parents[int(raw.rsplit(")", 1)[1].split()[1])].append(cpid)
-    children = defaultdict(int)
-    stack = list(parents.get(pid, []))
-    while stack:
-        c = stack.pop()
-        children[names.get(c, "?")] += 1
-        stack.extend(parents.get(c, []))
-    return {"cpu": cpu, "rss": int(rss[1]) * 1024 if rss else 0, "threads": int(fields[17]),
-            "fds": fds, "uptime": uptime, "children": dict(children)}
-
 def read(path, default=""):
     try:
         with open(path) as f:
@@ -809,30 +755,41 @@ def record_session(s, dirs):
         meta_dir = os.path.join(folder, META)
         os.makedirs(meta_dir, exist_ok=True)
         git_exclude(folder)
-        path = os.path.join(meta_dir, "sessions.json")
+        # two sessions can stop at once: lock the folder so neither drops the other's entry
+        lock = os.open(meta_dir, os.O_RDONLY)
         try:
-            with open(path) as f:
-                log = json.load(f)
-        except (OSError, ValueError):
-            log = {}
-        log[s.sid] = {
-            "title": s.title, "started": s.first_ts.isoformat(timespec="seconds"),
-            "updated": s.last_ts.isoformat(timespec="seconds"),
-            "first_prompt": one_line(s.first_prompt, 300),
-            "last_prompt": one_line(s.prompt, 300), "recap": one_line(s.recap, 600),
-            "model": short_model(s.model), "prompts": s.n_prompts,
-            "changed": [os.path.relpath(p, folder) if inside(p, [os.path.realpath(folder)]) else short_path(p)
-                        for p in changed][-20:],
-            "added": sum(s.files[p]["added"] for p in changed),
-            "removed": sum(s.files[p]["removed"] for p in changed),
-            "tokens": sum(s.tokens[:4]),
-        }
-        tmp = path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(log, f, indent=1)
-        os.replace(tmp, path)
-        write_log_md(name, meta_dir, log)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            record_entry(s, name, folder, meta_dir, changed)
+        except ValueError:
+            pass  # sessions.json is broken: leave it for a human rather than overwrite the history
+        finally:
+            os.close(lock)
     return bool(hits)
+
+
+def record_entry(s, name, folder, meta_dir, changed):
+    path = os.path.join(meta_dir, "sessions.json")
+    log = {}
+    if os.path.exists(path):
+        with open(path) as f:
+            log = json.load(f)
+    log[s.sid] = {
+        "title": s.title, "started": s.first_ts.isoformat(timespec="seconds"),
+        "updated": s.last_ts.isoformat(timespec="seconds"),
+        "first_prompt": one_line(s.first_prompt, 300),
+        "last_prompt": one_line(s.prompt, 300), "recap": one_line(s.recap, 600),
+        "model": short_model(s.model), "prompts": s.n_prompts,
+        "changed": [os.path.relpath(p, folder) if inside(p, [os.path.realpath(folder)]) else short_path(p)
+                    for p in changed][-20:],
+        "added": sum(s.files[p]["added"] for p in changed),
+        "removed": sum(s.files[p]["removed"] for p in changed),
+        "tokens": sum(s.tokens),
+    }
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(log, f, indent=1)
+    os.replace(tmp, path)
+    write_log_md(name, meta_dir, log)
 
 
 def write_log_md(name, meta_dir, log):
@@ -853,7 +810,7 @@ def write_log_md(name, meta_dir, log):
                        + ", ".join(e["changed"][:8]) + (" …" if len(e["changed"]) > 8 else ""))
         out.append(f"- {e['prompts']} prompts · {e['model']} · {fmt_n(e['tokens'])} tokens · session {sid[:8]}")
         out.append("")
-    tmp = os.path.join(meta_dir, "log.md.tmp")
+    tmp = os.path.join(meta_dir, f"log.md.{os.getpid()}.tmp")
     with open(tmp, "w") as f:
         f.write("\n".join(out))
     os.replace(tmp, os.path.join(meta_dir, "log.md"))
@@ -905,6 +862,7 @@ def backfill_main():
     print(f"recorded {n} sessions into {PROJECTS_HOME}/*/{META}/")
 
 
+NO_ABOUT = "add a What we are building section to STATUS.md"
 ABOUT_SECTIONS = ("what we are building", "about", "overview", "summary")
 
 
@@ -1092,7 +1050,9 @@ def git_details(path):
             "staged": staged, "modified": modified, "untracked": untracked,
             "files": files, "add": add, "del": rem, "commit_add": c_add, "commit_del": c_rem,
             "last_commit": git("log", "-1", "--format=%h %s"),
-            "pushed": git("log", "-g", "-1", "--format=%cr", f"refs/remotes/{upstream}") if upstream else "",
+            # reflog date of the remote-tracking ref, i.e. when it last moved (not the commit date)
+            "pushed": re.sub(r".*@\{(.*)\}$", r"\1", git("log", "-g", "-1", "--date=relative", "--format=%gd",
+                                                       f"refs/remotes/{upstream}") or "") if upstream else "",
             "fetched": fetched,
             "remote": (m[1] + (" on github" if "github.com" in remote else "")) if m else remote,
             "stash": len((git("stash", "list") or "").splitlines()),
@@ -1308,6 +1268,7 @@ class App:
         self.sel = 0
         self.sel_sid = None
         self.roots = {}
+        self.event_roots = {}  # sid -> (last_ts, checked at, project path) for the Usage tab
         self.projects = []
         self.projects_at = 0
         self.proj_name = None
@@ -1338,22 +1299,16 @@ class App:
         days = [0] * 7
         models = defaultdict(int)
         projects = defaultdict(int)
-        per_session = defaultdict(int)
         kinds = [0, 0, 0, 0]
-        week_sessions = set()
-        today = today_msgs = week = week_msgs = 0
+        today = today_msgs = 0
         for e in self.usage.events:
             ts = e[0]
             v = metric_value(e, m)
-            per_session[e[3]] += v
             if ts < week_start:
                 continue
             days[(ts - week_start).days] += v
-            week += v
-            week_msgs += 1
-            week_sessions.add(e[3])
             models[short_model(e[1])] += v
-            projects[short_path(e[2])] += v
+            projects[self.session_project(e[3])] += v
             for i in range(4):
                 kinds[i] += e[4 + i]
             if ts >= midnight:
@@ -1362,22 +1317,8 @@ class App:
             if sel <= ts < sel + timedelta(days=1):
                 hours[ts.hour] += v
 
-        # 5-hour usage window: starts at the hour of the first message after the
-        # previous window ended
-        block_end = None
-        block = 0
-        for e in self.usage.events:
-            if block_end is None or e[0] >= block_end:
-                block_end = e[0].replace(minute=0, second=0, microsecond=0) + timedelta(hours=5)
-                block = 0
-            block += metric_value(e, m)
-        if block_end is None or block_end <= now:
-            block, block_end = 0, None
-
         return dict(hours=hours, days=days, week_start=week_start, models=models,
-                    projects=projects, per_session=per_session, kinds=kinds, today=today,
-                    today_msgs=today_msgs, week=week, week_msgs=week_msgs,
-                    sessions=len(week_sessions), block=block, block_end=block_end,
+                    projects=projects, kinds=kinds, today=today, today_msgs=today_msgs,
                     now=now, sel=sel)
 
     # ---- frame
@@ -1566,6 +1507,18 @@ class App:
         name = os.path.basename(hit[1])
         return name if hit[1] != os.path.realpath(HOME) else "~"
 
+    def session_project(self, sid):
+        """The project a session belongs to, as a short path; same rule as the Overview and Live tabs.
+        Worked out again only when the session has moved on, so old sessions cost one git call."""
+        s = self.usage.sessions.get(sid)
+        if not s:
+            return "?"
+        hit = self.event_roots.get(sid)
+        if not hit or (hit[0] != s.last_ts and time.time() - hit[1] > 60):
+            hit = (s.last_ts, time.time(), short_path(session_root({"cwd": s.cwd}, s)))
+            self.event_roots[sid] = hit
+        return hit[2]
+
     def ov_system(self, scr, y, x, w):
         sn = self.sys.snap
         t = sn["temps"]
@@ -1691,7 +1644,7 @@ class App:
         cw = w // 3
         self.box_days(scr, by, x, bottom_h, cw)
         self.box_ranked(scr, by, x + cw, bottom_h, cw, "Models", a["models"])
-        self.box_ranked(scr, by, x + 2 * cw, bottom_h, w - 2 * cw, "Projects", a["projects"])
+        self.box_ranked(scr, by, x + 2 * cw, bottom_h, w - 2 * cw, "Projects", a["projects"], paths=True)
 
     def box_days(self, scr, y, x, h, w):
         a = self.a
@@ -1708,7 +1661,7 @@ class App:
             val = fmt_n(days[i]) if days[i] else "-"
             scr.put(r, x + w - 2 - len(val), val, C["fg"] if hl else C["dim"])
 
-    def box_ranked(self, scr, y, x, h, w, title, data):
+    def box_ranked(self, scr, y, x, h, w, title, data, paths=False):
         scr.box(y, x, h, w, title)
         items = sorted(data.items(), key=lambda kv: -kv[1])
         total = sum(data.values()) or 1
@@ -1720,7 +1673,7 @@ class App:
             r = y + 1 + i
             tail = f"{100 * v / total:3.0f}%"
             nw = w - 6 - len(tail) - cells
-            name = k if len(k) <= nw else "…" + k[-(nw - 1):]
+            name = "…" + k[-(nw - 1):] if paths and len(k) > nw else k  # paths keep their end
             scr.put(r, x + 2, name, C["fg"] if i == 0 else C["teal"], nw)
             scr.meter(r, x + w - 3 - len(tail) - cells, cells, 100 * v / total, C["sand"] if i == 0 else C["muted"])
             scr.put(r, x + w - 2 - len(tail), tail, C["dim"])
@@ -2051,53 +2004,6 @@ class App:
                 scr.put(r, x + 15, one_line(text), C["muted"] | ITALIC, w - 15)
                 r += 1
 
-    def lv_todos(self, scr, y, x, h, w, cur, s):
-        done = sum(1 for t in s.todos if t.get("status") == "completed")
-        for i, t in enumerate(s.todos[:h - 1]):
-            st = t.get("status")
-            mark, attr = {"completed": ("✓", C["teal"]), "in_progress": ("›", C["sand"])}.get(st, ("·", C["dim"]))
-            scr.put(y + i, x, mark, attr)
-            text = t.get("activeForm") if st == "in_progress" and t.get("activeForm") else t.get("content", "")
-            scr.put(y + i, x + 2, text, C["fg"] if st == "in_progress" else C["dim"] if st == "completed" else C["muted"], w - 2)
-        scr.put(y + h - 1, x, f"{done}/{len(s.todos)} done", C["dim"])
-
-    def lv_tokens(self, scr, y, x, h, w, cur, s):
-        inp, out, cw, cr, think = s.tokens
-        total = inp + out + cw + cr
-        hit = 100 * cr / max(1, inp + cw + cr)
-        rows = [("Input", fmt_n(inp)), ("Output", f"{fmt_n(out)}" + (f" · {fmt_n(think)} thinking" if think else "")),
-                ("Cache w", fmt_n(cw)), ("Cache r", fmt_n(cr)),
-                ("Total", fmt_n(total)), ("Cache hit", f"{hit:.0f}%"),
-                ("Context", f"{fmt_n(s.ctx)} now · {fmt_n(s.ctx_peak)} peak")]
-        if len(s.models) > 1:
-            rows.append(("Models", ", ".join(f"{short_model(m)} {fmt_n(v)}" for m, v in
-                                              sorted(s.models.items(), key=lambda kv: -kv[1]) if m)))
-        r = y
-        for k, v in rows:
-            if r >= y + h - (2 if h > len(rows) + 1 else 0):
-                break
-            scr.kv(r, x, k, v, C["fg"] | curses.A_BOLD if k == "Total" else None, 10, w)
-            r += 1
-        if r + 1 < y + h:
-            # tokens per minute over the last hour, this session only
-            m = METRICS[self.metric][0]
-            now = datetime.now()
-            buckets = [0] * 60
-            for e in self.usage.events:
-                if e[3] == s.sid:
-                    age = int((now - e[0]).total_seconds() // 60)
-                    if 0 <= age < 60:
-                        buckets[59 - age] += metric_value(e, m)
-            width = max(10, w - 11)
-            step = 60 / width
-            cols = [sum(buckets[int(i * step):max(int(i * step) + 1, int((i + 1) * step))]) for i in range(width)]
-            peak = max(cols) or 1
-            line = "".join(SPARK[min(8, round(v / peak * 8))] if v else "·" for v in cols)
-            scr.kv(y + h - 2, x, "Last hour", lw=10)
-            scr.put(y + h - 2, x + 11, line, C["teal"])
-            scr.put(y + h - 1, x + 11, "60m ago", C["dim"])
-            scr.put(y + h - 1, x + w - 3, "now", C["dim"])
-
     def lv_activity(self, scr, y, x, h, w, cur, s):
         acts = list(s.activity)[-h:]
         if not acts:
@@ -2119,115 +2025,6 @@ class App:
             n = scr.put(r, x + 11, name, C["rose"] if act["status"] != "err" else C["clay"])
             scr.put(r, x + 12 + n, rest, C["fg"] if i == 0 else C["muted"], w - 13 - n - len(dur))
             scr.put(r, x + w - len(dur), dur, C["dim"])
-
-    def lv_tools(self, scr, y, x, h, w, cur, s):
-        items = sorted(s.tools.items(), key=lambda kv: -kv[1])
-        total = sum(s.tools.values())
-        if not items:
-            scr.put(y, x, "no tool calls yet", C["dim"])
-            return
-        peak = items[0][1]
-        nw = min(14, max(len(k) for k, _ in items[:h - 1]) + 1)
-        for i, (k, v) in enumerate(items[:h - 1]):
-            name = k if len(k) < nw else k[:nw - 2] + "…"
-            scr.put(y + i, x, name, C["teal"])
-            scr.hbar(y + i, x + nw, max(3, w - nw - 6), v / peak, C["muted"])
-            scr.put(y + i, x + w - len(str(v)), str(v), C["fg"])
-        err = f" · {s.tool_errors} failed" if s.tool_errors else ""
-        scr.put(y + h - 1, x, f"{total} calls · {len(s.tools)} kinds{err}", C["clay"] if s.tool_errors else C["dim"])
-
-    def lv_files(self, scr, y, x, h, w, cur, s):
-        files = sorted(s.files.items(), key=lambda kv: kv[1].get("ts") or datetime.min, reverse=True)
-        if not files:
-            scr.put(y, x, "no files touched yet", C["dim"])
-            return
-        root = cur["cwd"] or ""
-        for i, (path, f) in enumerate(files[:h - 1]):
-            mark, attr = {"edit": ("✎", C["sand"]), "write": ("+", C["teal"]), "read": ("○", C["dim"])}[f["op"]]
-            rel = os.path.relpath(path, root) if root and path.startswith(root + os.sep) else short_path(path)
-            if rel.count(os.sep) > 1:
-                rel = os.path.join(*rel.split(os.sep)[-2:])
-            delta = (f"+{f['added']} −{f['removed']}" if f["removed"] else f"+{f['added']}") if f["added"] else ""
-            scr.put(y + i, x, mark, attr)
-            nw = w - 3 - len(delta)
-            name = rel if len(rel) <= nw else "…" + rel[-(nw - 1):]
-            scr.put(y + i, x + 2, name, C["fg"] if f["op"] != "read" else C["muted"], nw)
-            if delta:
-                scr.put(y + i, x + w - len(delta), delta, C["teal"])
-        edited = sum(1 for f in s.files.values() if f["op"] != "read")
-        foot = f"{len(s.files)} files · {edited} changed"
-        scr.put(y + h - 1, x, foot, C["dim"])
-        lines = f"+{s.added} −{s.removed}"
-        if len(foot) + len(lines) + 2 <= w:
-            scr.put(y + h - 1, x + w - len(lines), lines, C["teal"])
-
-    def lv_agents(self, scr, y, x, h, w, cur, s):
-        r = y
-        running = cur["agents"]
-        scr.kv(r, x, "Running", str(running), C["rose"] | curses.A_BOLD if running else C["dim"], 9)
-        launched = f"{len(s.agents)} this session"
-        scr.put(r, x + 12, f"· {launched}", C["dim"], w - 12)
-        r += 1
-        lines_left = h - 4
-        if not s.agents and lines_left > 0:
-            scr.put(r, x + 1, "no agents launched in this session", C["dim"], w - 1)
-        for a in list(s.agents.values())[-max(0, lines_left):]:
-            if r >= y + h - 3:
-                break
-            mark, attr = {"running": ("›", C["sand"]), "background": ("◌", C["lav"]),
-                          "done": ("✓", C["teal"]), "error": ("✕", C["clay"])}[a["status"]]
-            scr.put(r, x + 1, mark, attr)
-            n = scr.put(r, x + 3, a["type"], C["lav"])
-            scr.put(r, x + 4 + n, a["desc"], C["fg"], w - 4 - n)
-            r += 1
-        r = max(r, y + h - 3)
-        if r + 2 >= y + h:  # short box: keep skills, drop the rest
-            r = min(r, y + h - 1)
-            scr.kv(r, x, "Skills", ", ".join(reversed(s.skills)) if s.skills else "none used",
-                   C["fg"] if s.skills else C["dim"], 9, w)
-            return
-        scr.kv(r, x, "Skills", ", ".join(reversed(s.skills)) if s.skills else "none used",
-               C["fg"] if s.skills else C["dim"], 9, w)
-        mcp = ", ".join(f"{k} ×{v}" for k, v in sorted(s.mcp.items(), key=lambda kv: -kv[1]))
-        scr.kv(r + 1, x, "MCP", mcp or "none used", C["fg"] if mcp else C["dim"], 9, w)
-        scr.kv(r + 2, x, "Web", f"{s.web} searches & fetches" if s.web else "none", C["fg"] if s.web else C["dim"], 9, w)
-
-    def lv_process(self, scr, y, x, h, w, cur, s):
-        p = proc_info(cur["pid"])
-        if not p:
-            scr.put(y, x, "process gone", C["dim"])
-            return
-        cx = scr.kv(y, x, "CPU", lw=9)
-        cells = max(5, min(14, w - 20))
-        scr.meter(y, cx, cells, p["cpu"], level(p["cpu"], 50, 85))
-        scr.put(y, cx + cells + 1, f"{p['cpu']:.0f}%", C["fg"])
-        rows = [("Memory", f"{p['rss'] / 2**20:.0f} MB rss"),
-                ("Threads", f"{p['threads']} · {p['fds']} open files"),
-                ("Uptime", fmt_dur(p["uptime"])),
-                ("Children", ", ".join(f"{k} ×{v}" if v > 1 else k for k, v in p["children"].items()) or "none")]
-        for i, (k, v) in enumerate(rows[:h - 1]):
-            scr.kv(y + 1 + i, x, k, v, None if k != "Children" or p["children"] else C["dim"], 9, w)
-
-    def lv_turns(self, scr, y, x, h, w, cur, s):
-        t = s.turns
-        avg = sum(t) / len(t) / 1000 if t else 0
-        rows = [("Prompts", f"{s.n_prompts} from you · {s.n_replies} replies"),
-                ("Turns", f"{len(t)} · avg {fmt_secs(avg)} · max {fmt_secs(max(t) / 1000)}" if t else "-"),
-                ("Thinking", fmt_secs(s.think_ms / 1000) if s.think_ms else "-"),
-                ("Last msg", f"{fmt_secs((datetime.now() - s.last_ts).total_seconds())} ago" if s.last_ts else "-")]
-        r = y
-        for k, v in rows:
-            if r >= y + h:
-                return
-            scr.kv(r, x, k, v, lw=10, maxw=w)
-            r += 1
-        for ts, text in reversed(list(s.prompts)[:-1]):
-            if r >= y + h:
-                return
-            stamp = ts.strftime("%H:%M") if ts else "--:--"
-            scr.put(r, x, stamp, C["dim"])
-            scr.put(r, x + 6, one_line(text), C["muted"] | ITALIC, w - 6)
-            r += 1
 
     def tab_projects(self, scr, y, x, h, w):
         if time.time() - self.projects_at > 5:
@@ -2311,25 +2108,21 @@ class App:
         if not left_off and last:
             left_off = last.get("recap") or f"Last prompt: {last.get('last_prompt', '')}"
         nxt = sec.get("next steps") or sec.get("next") or ""
-        my = y + top_h
+        my, by = y + top_h, y + top_h + mid_h
+        # reading order: what we are building, where we left off, next steps, activity
         if rw >= 70:
             half = rw // 2
-            self.text_box(scr, my, rx, mid_h, half, "Where we left off", left_off or "nothing recorded yet")
-            self.text_box(scr, my, rx + half, mid_h, rw - half, "Next steps", nxt or "add a Next steps section to STATUS.md")
-        else:
-            both = left_off + (f"\n\nNext: {nxt}" if nxt else "")
-            self.text_box(scr, my, rx, mid_h, rw, "Where we left off", both or "nothing recorded yet")
-
-        if bot_h >= 3:
-            by = my + mid_h
-            about = p["about"] or "add a What we are building section to STATUS.md"
-            if rw >= 70:
-                half = rw // 2
-                self.text_box(scr, by, rx, bot_h, half, "What we are building", about)
+            self.text_box(scr, my, rx, mid_h, half, "What we are building", p["about"], NO_ABOUT)
+            self.text_box(scr, my, rx + half, mid_h, rw - half, "Where we left off", left_off, "nothing recorded yet")
+            if bot_h >= 3:
+                self.text_box(scr, by, rx, bot_h, half, "Next steps", nxt, "add a Next steps section to STATUS.md")
                 scr.box(by, rx + half, bot_h, rw - half, "Activity")
                 self.proj_activity(scr, by + 1, rx + half + 2, bot_h - 2, rw - half - 4, p)
-            else:
-                self.text_box(scr, by, rx, bot_h, rw, "What we are building", about)
+        else:
+            self.text_box(scr, my, rx, mid_h, rw, "What we are building", p["about"], NO_ABOUT)
+            if bot_h >= 3:
+                both = left_off + (f"\n\nNext: {nxt}" if nxt else "")
+                self.text_box(scr, by, rx, bot_h, rw, "Where we left off", both, "nothing recorded yet")
 
     def proj_activity(self, scr, y, x, h, w, p):
         a = git_activity(p["folder"])
@@ -2338,18 +2131,19 @@ class App:
             return
         now = time.time()
         week = [t for t in a["commits"] if now - t < 7 * 86400]
-        last_c = f" · last {fmt_dur(now - a['commits'][0])} ago" if a["commits"] else ""
         if not a["upstream"]:
             push = ("no upstream branch", C["dim"])
         else:
             state = "up to date" if not a["ahead"] and not a["behind"] else \
                 " · ".join(t for t in (f"{a['ahead']} to push" if a["ahead"] else "",
                                        f"{a['behind']} to pull" if a["behind"] else "") if t)
-            last_p = f" · last {fmt_dur(now - a['pushes'][0])} ago" if a["pushes"] else ""
-            push = (f"{len(a['pushes'])} recorded · {state}{last_p}", C["sand"] if a["ahead"] else None)
+            last_p = f" · last {fmt_dur(now - a['pushes'][0])} ago · {len(a['pushes'])} recorded" if a["pushes"] else ""
+            push = (state + last_p, C["sand"] if a["ahead"] else None)
         sess = p["sessions"]
         days_on = {e["updated"][:10] for e in sess} | {e.get("started", "")[:10] for e in sess} - {""}
-        rows = [("Commits", f"{len(a['commits'])} in the past year · {len(week)} this week{last_c}", None),
+        commits = (f"last {fmt_dur(now - a['commits'][0])} ago · {len(week)} this week · {len(a['commits'])} in a year"
+                   if a["commits"] else "none in the past year")
+        rows = [("Commits", commits, None if a["commits"] else C["dim"]),
                 ("Pushes", *push),
                 ("Claude", f"{len(sess)} session{'s' * (len(sess) != 1)} on {len(days_on)} day{'s' * (len(days_on) != 1)}" if sess else "no sessions recorded yet",
                  None if sess else C["dim"])]
@@ -2380,8 +2174,12 @@ class App:
             lvl = 0 if not c else min(4, 1 + int(3 * (c - 1) / max(1, top - 1)) if top > 1 else 4)
             scr.put(y + row, x + lw + 2 * col, SQ, C[f"heat{lvl}"] if lvl else C["faint"])
 
-    def text_box(self, scr, y, x, h, w, title, text):
+    def text_box(self, scr, y, x, h, w, title, text, empty=""):
+        """Markdown-ish text in a box; `empty` is shown dimmed when there is no text."""
         scr.box(y, x, h, w, title)
+        if not text.strip():
+            scr.put(y + 1, x + 2, empty, C["dim"], w - 4)
+            return
         # join soft-wrapped markdown lines back into paragraphs and list items
         blocks = []
         for raw in text.splitlines():
@@ -2409,10 +2207,11 @@ class App:
             lines.pop()
         room = h - 2
         if len(lines) > room:
-            lines = lines[:room]
-            lines[-1] = lines[-1][:max(0, w - 6)] + "…"
+            # never end on the blank line between paragraphs: use that row for the next line instead
+            lines = lines[:room - 1] + [lines[room]] if not lines[room - 1] else lines[:room]
+            lines[-1] = lines[-1][:max(0, w - 5)].rstrip() + "…"
         for i, ln in enumerate(lines):
-            attr = C["teal"] if ln.startswith("✓") else C["dim"] if "yet" in text and len(lines) == 1 else C["fg"]
+            attr = C["teal"] if ln.startswith("✓") else C["fg"]
             scr.put(y + 1 + i, x + 2, ln, attr, w - 4)
 
     def tab_system(self, scr, y, x, h, w):
