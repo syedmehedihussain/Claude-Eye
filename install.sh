@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Install cctop: link it into ~/.local/bin. Nothing else on the system is changed.
+# Install cctop: link it into ~/.local/bin.
+#   --skill   also link the project-notes skill into ~/.claude/skills
+# Nothing else on the system is changed.
 set -euo pipefail
 
-src="$(cd "$(dirname "$0")" && pwd)/cctop.py"
+here="$(cd "$(dirname "$0")" && pwd)"
+src="$here/cctop.py"
 bin="${HOME}/.local/bin"
 
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' || {
@@ -18,6 +21,13 @@ case ":$PATH:" in
     *) echo "note: $bin is not on your PATH yet" ;;
 esac
 
+if [ "${1:-}" = "--skill" ]; then
+    skills="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"
+    mkdir -p "$skills"
+    ln -sfn "$here/skills/project-notes" "$skills/project-notes"
+    echo "installed: $skills/project-notes (start a new Claude Code session to load it)"
+fi
+
 echo
 echo "optional: record sessions into ~/Projects/<name>/_project/ (Projects tab)"
-echo "  see docs/project-notes.md for the hook and CLAUDE.md snippet"
+echo "  see docs/project-notes.md for the hook, the skill and the CLAUDE.md snippet"
