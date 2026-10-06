@@ -1119,11 +1119,11 @@ class Screen:
         return x + n
 
     def squares(self, y, x, parts):
-        """Text-sized squares (two full blocks) with a one-column gap. parts: [(count, attr)]."""
+        """Small squares with half-column gaps. parts: [(count, attr)]."""
         i = 0
         for count, attr in parts:
             for _ in range(count):
-                self.put(y, x + 3 * i, SQ, attr)
+                self.put(y, x + 2 * i, SQ, attr)
                 i += 1
         return sq_width(i)
 
@@ -1141,15 +1141,17 @@ class Screen:
 
 
 SPARK = " ▁▂▃▄▅▆▇█"
-SQ = "▆▆"  # two cells wide, three quarters tall: a square a bit smaller than the text height
+# one square = a lower half block plus a lower-left quadrant: 1.5 columns of fill, half a
+# column of gap, half the text height. Squares sit two columns apart.
+SQ = "▄▖"
 
 
 def sq_count(cols):
-    return max(1, (cols + 1) // 3)
+    return max(1, cols // 2)
 
 
 def sq_width(n):
-    return 3 * n - 1 if n else 0
+    return 2 * n
 
 
 def stat_text(scr, y, x, add, rem):
