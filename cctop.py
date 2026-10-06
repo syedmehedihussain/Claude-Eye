@@ -963,6 +963,20 @@ def git_details(path):
                 continue
             staged += line[0] not in " ?"
             modified += len(line) > 1 and line[1] != " "
+        files, add, rem = [], 0, 0
+        for line in (git("diff", "HEAD", "--numstat") or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3:
+                a, d = (int(v) if v.isdigit() else 0 for v in parts[:2])  # binary files show "-"
+                files.append((parts[2], a, d))
+                add, rem = add + a, rem + d
+        files.sort(key=lambda f: -(f[1] + f[2]))
+        c_add = c_rem = 0
+        for line in (git("show", "--numstat", "--format=", "HEAD") or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3:
+                c_add += int(parts[0]) if parts[0].isdigit() else 0
+                c_rem += int(parts[1]) if parts[1].isdigit() else 0
         remote = git("remote", "get-url", "origin") or ""
         m = re.search(r"[:/]([^/:]+/[^/]+?)(?:\.git)?$", remote)
         gitdir = git("rev-parse", "--absolute-git-dir") or ""
@@ -975,7 +989,8 @@ def git_details(path):
             "upstream": upstream or "",
             "ahead": ahead, "behind": behind,
             "staged": staged, "modified": modified, "untracked": untracked,
-            "last_commit": git("log", "-1", "--format=%h %s · %cr"),
+            "files": files, "add": add, "del": rem, "commit_add": c_add, "commit_del": c_rem,
+            "last_commit": git("log", "-1", "--format=%h %s"),
             "pushed": git("log", "-g", "-1", "--format=%cr", f"refs/remotes/{upstream}") if upstream else "",
             "fetched": fetched,
             "remote": (m[1] + (" on github" if "github.com" in remote else "")) if m else remote,
@@ -1104,19 +1119,43 @@ class Screen:
         return x + n
 
     def meter(self, y, x, cells, pct, attr):
-        on = round(cells * min(max(pct, 0), 100) / 100)
-        self.put(y, x, "■" * on, attr)
-        self.put(y, x + on, "■" * (cells - on), C["faint"])
+        """The one bar style used everywhere: ▰ filled cells, ▱ empty cells."""
+        pct = min(max(pct, 0), 100)
+        on = round(cells * pct / 100)
+        if pct > 0 and on == 0:
+            on = 1
+        self.put(y, x, ON * on, attr)
+        self.put(y, x + on, OFF * (cells - on), C["faint"])
 
     def hbar(self, y, x, cells, frac, attr):
-        eighths = round(cells * 8 * min(max(frac, 0), 1))
-        full, rem = divmod(eighths, 8)
-        self.put(y, x, "█" * full + ("▏▎▍▌▋▊▉"[rem - 1] if rem else ""), attr)
-        if eighths == 0 and frac > 0:
-            self.put(y, x, "▏", attr)
+        self.meter(y, x, cells, 100 * frac, attr)
 
 
 SPARK = " ▁▂▃▄▅▆▇█"
+ON, OFF = "▰", "▱"
+
+
+def stat_text(scr, y, x, add, rem):
+    """'+12 −3' in green and red; returns the width written."""
+    n = scr.put(y, x, f"+{add}", C["teal"])
+    n += scr.put(y, x + n, " ")
+    n += scr.put(y, x + n, f"−{rem}", C["clay"])
+    return n
+
+
+def stat_bar(scr, y, x, cells, add, rem, scale=1.0):
+    """GitHub-style diff bar: green cells for additions, red for deletions, empty for the rest."""
+    total = add + rem
+    filled = max(1, round(cells * min(scale, 1))) if total else 0
+    green = round(filled * add / total) if total else 0
+    if add and not green:
+        green = 1
+    red = filled - green
+    if rem and not red and filled > 1:
+        green, red = green - 1, 1
+    scr.put(y, x, ON * green, C["teal"])
+    scr.put(y, x + green, ON * red, C["clay"])
+    scr.put(y, x + green + red, OFF * (cells - green - red), C["faint"])
 
 
 def spark(values, width, lo=None, hi=None):
@@ -1485,12 +1524,14 @@ class App:
         if not items:
             scr.put(y + 1, x + 2, "no usage yet", C["dim"])
             return
+        cells = max(4, min(10, (w - 4) // 3))
         for i, (k, v) in enumerate(items[:h - 2]):
             r = y + 1 + i
-            tail = f"{100 * v / total:.0f}%"
-            nw = w - 5 - len(tail)
+            tail = f"{100 * v / total:3.0f}%"
+            nw = w - 7 - len(tail) - cells
             name = k if len(k) <= nw else "…" + k[-(nw - 1):]
-            scr.put(r, x + 2, name, C["fg"] if i == 0 else C["teal"])
+            scr.put(r, x + 2, name, C["fg"] if i == 0 else C["teal"], nw)
+            scr.meter(r, x + w - 3 - len(tail) - cells, cells, 100 * v / total, C["sand"] if i == 0 else C["muted"])
             scr.put(r, x + w - 2 - len(tail), tail, C["dim"])
 
     def tab_live(self, scr, y, x, h, w):
@@ -1607,42 +1648,95 @@ class App:
             scr.put(y + h - 1, x + w - len(more) - 2, more, C["dim"])
 
     def lv_git(self, scr, y, x, h, w, g):
+        user = github_user()
         if not g:
             scr.put(y, x, "not a git repo", C["dim"])
-            user = github_user()
             if user and h > 1:
                 scr.kv(y + 1, x, "GitHub", f"connected as {user}", C["teal"], 9, w)
             return
-        if g["upstream"]:
-            ahead, behind = g["ahead"], g["behind"]
-            if not ahead and not behind:
-                sync, sattr = "up to date", C["teal"]
+        bottom = y + h
+        r = y
+
+        # branch
+        scr.kv(r, x, "Branch", g["branch"] + (f" → {g['upstream']}" if g["upstream"] else ""),
+               C["fg"] | curses.A_BOLD, 9, w)
+        r += 1
+
+        # sync: one cell per commit to push (rose) and to pull (sand)
+        if r < bottom:
+            cx = scr.kv(r, x, "Sync", lw=9)
+            if not g["upstream"]:
+                scr.put(r, cx, "no upstream, not pushed yet", C["sand"], w - (cx - x))
+            elif not g["ahead"] and not g["behind"]:
+                scr.put(r, cx, "✓ up to date", C["teal"])
             else:
-                bits = ([f"↑{ahead} to push"] if ahead else []) + ([f"↓{behind} to pull"] if behind else [])
-                sync, sattr = " · ".join(bits), C["sand"] if behind else C["rose"]
-        else:
-            sync, sattr = "no upstream, not pushed yet", C["sand"]
-        changes = g["staged"], g["modified"], g["untracked"]
-        if any(changes):
-            ch = " · ".join(f"{n} {label}" for n, label in zip(changes, ("staged", "modified", "untracked")) if n)
-            cattr = C["sand"]
-        else:
-            ch, cattr = "clean", C["teal"]
-        user = github_user()
-        rows = [
-            ("Branch", g["branch"] + (f" → {g['upstream']}" if g["upstream"] else ""), C["fg"] | curses.A_BOLD),
-            ("Sync", sync, sattr),
-            ("Changes", ch, cattr),
-            ("Commit", g["last_commit"] or "-", None),
-            ("Pushed", g["pushed"] or "never", None if g["pushed"] else C["dim"]),
-            ("Fetched", g["fetched"] or "never", None if g["fetched"] else C["dim"]),
-            ("Remote", g["remote"] or "none", None if g["remote"] else C["dim"]),
-            ("GitHub", f"connected as {user}" if user else "not connected", C["teal"] if user else C["dim"]),
-        ]
+                for arrow, n, attr, word in (("↑", g["ahead"], C["rose"], "push"), ("↓", g["behind"], C["sand"], "pull")):
+                    if not n:
+                        continue
+                    cx += scr.put(r, cx, f"{arrow}{n} ", attr | curses.A_BOLD)
+                    cells = min(n, 6)
+                    scr.put(r, cx, "▰" * cells, attr)
+                    cx += cells + 1
+                    cx += scr.put(r, cx, f"to {word}", C["dim"]) + 2
+            r += 1
+
+        # working tree diff stat, GitHub style
+        if r < bottom:
+            cx = scr.kv(r, x, "Changes", lw=9)
+            if g["add"] or g["del"] or g["untracked"]:
+                cx += stat_text(scr, r, cx, g["add"], g["del"])
+                if g["add"] or g["del"]:
+                    stat_bar(scr, r, cx + 1, 10, g["add"], g["del"])
+                    cx += 12
+                if g["untracked"]:
+                    scr.put(r, cx, f"{g['untracked']} new", C["lav"], x + w - cx)
+            else:
+                scr.put(r, cx, "✓ clean", C["teal"])
+            r += 1
+
+        # changed files with their own bars, scaled to the biggest change
+        files = g["files"]
+        left = bottom - r
+        room = max(0, left - min(3, left))  # keep the commit line and a couple of others
+        if files and room:
+            peak = max(a + d for _, a, d in files) or 1
+            for path, a, d in files[:room]:
+                if r >= bottom:
+                    break
+                stat = f"+{a} −{d}"
+                cells = 6
+                nw = w - 2 - len(stat) - cells - 2
+                name = path if len(path) <= nw else "…" + path[-(nw - 1):]
+                scr.put(r, x + 1, "▸", C["faint"])
+                scr.put(r, x + 3, name, C["fg"], nw)
+                sx = x + w - cells - 1 - len(stat)
+                stat_text(scr, r, sx, a, d)
+                stat_bar(scr, r, x + w - cells, cells, a, d, scale=(a + d) / peak)
+                r += 1
+            if len(files) > room and r < bottom:
+                scr.put(r, x + 3, f"+{len(files) - room} more files", C["dim"])
+                r += 1
+
+        # last commit with its stat
+        if r < bottom and g["last_commit"]:
+            cx = scr.kv(r, x, "Commit", lw=9)
+            h_, _, rest = g["last_commit"].partition(" ")
+            cx += scr.put(r, cx, h_, C["rose"]) + 1
+            stat = len(f"+{g['commit_add']} −{g['commit_del']}") + 1
+            scr.put(r, cx, rest, C["fg"], x + w - cx - stat)
+            stat_text(scr, r, x + w - stat + 1, g["commit_add"], g["commit_del"])
+            r += 1
+        tail = [("Pushed", g["pushed"] or "never", None if g["pushed"] else C["dim"]),
+                ("Fetched", g["fetched"] or "never", None if g["fetched"] else C["dim"]),
+                ("Remote", g["remote"] or "none", None if g["remote"] else C["dim"]),
+                ("GitHub", f"connected as {user}" if user else "not connected", C["teal"] if user else C["dim"])]
         if g["stash"]:
-            rows.insert(3, ("Stash", f"{g['stash']} saved", C["lav"]))
-        for i, (k, v, attr) in enumerate(rows[:h]):
-            scr.kv(y + i, x, k, v, attr, 9, w)
+            tail.insert(0, ("Stash", f"{g['stash']} saved", C["lav"]))
+        for k, v, attr in tail:
+            if r >= bottom:
+                break
+            scr.kv(r, x, k, v, attr, 9, w)
+            r += 1
 
     def lv_session(self, scr, y, x, h, w, cur, s, root=None):
         busy = cur["status"] == "busy"
@@ -1973,10 +2067,18 @@ class App:
              None if sess else C["dim"]),
             ("Docs", docs, None if p["docs"] else C["dim"]),
         ]
-        top_h = len(info) + 2
+        steps = re.findall(r"^\s*[-*]\s+\[([ xX])\]", sec.get("next steps", ""), re.M)
+        top_h = len(info) + 2 + (1 if steps else 0)
         scr.box(y, rx, top_h, rw, p["name"])
         for i, (k, v, attr) in enumerate(info):
             scr.kv(y + 1 + i, rx + 2, k, v, attr, 10, rw - 4)
+        if steps:
+            done = sum(1 for m in steps if m.lower() == "x")
+            r = y + 1 + len(info)
+            cx = scr.kv(r, rx + 2, "Progress", lw=10)
+            cells = max(6, min(20, rw - 30))
+            scr.meter(r, cx, cells, 100 * done / len(steps), C["teal"])
+            scr.put(r, cx + cells + 2, f"{done}/{len(steps)} next steps done", C["dim"], rw - (cx - rx) - cells - 4)
 
         rest = h - top_h
         mid_h = max(4, rest // 2 + 1)
