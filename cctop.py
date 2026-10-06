@@ -1340,7 +1340,7 @@ class App:
         self.box_session(scr, r, bx + bw + 2, box_h, bw, cur, compact)
         self.box_sysline(scr, r + box_h, bx, 3, 2 * bw + 2)
 
-    def box_limits(self, scr, y, x, h, w, cur):
+    def box_limits(self, scr, y, x, h, w, cur, project=None):
         lim = self.limits
         age = time.time() - lim.fetched if lim.fetched else 0
         scr.box(y, x, h, w, f"Usage · {fmt_dur(age)} old" if lim.data and age > 360 else "Usage")
@@ -1353,6 +1353,8 @@ class App:
         else:
             now = datetime.now().astimezone()
             for label, key in (("5h", "five_hour"), ("Week", "seven_day")):
+                if r >= y + h - 1:
+                    break
                 win = lim.data.get(key) or {}
                 used = win.get("utilization")
                 if used is None:
@@ -1374,11 +1376,12 @@ class App:
                     note += f" · {'resets ' if len(note) + len(when) + 10 < w - 2 - (cx - x) else ''}{when}"
                 except (KeyError, TypeError, ValueError):
                     pass
-                scr.put(r + 1, cx, note, C["dim"], w - 2 - (cx - x))
+                if r + 1 < y + h - 1:
+                    scr.put(r + 1, cx, note, C["dim"], w - 2 - (cx - x))
                 r += 2
         s = cur["session"] if cur else None
         rows = [("Model", short_model(s.model) if s and s.model else "-"),
-                ("Project", short_path(cur["cwd"]) if cur else "-"),
+                ("Project", short_path(project or (cur["cwd"] if cur else "")) or "-"),
                 ("Context", fmt_n(s.ctx) if s and s.ctx else "-"),
                 ("Today", f"{fmt_n(self.a['today'])} tokens · {self.a['today_msgs']} msgs")]
         for k, v in rows:
@@ -1609,8 +1612,7 @@ class App:
         g = git_details(root)
         scr.box(by, rx, bot_h, half, "Git · GitHub")
         self.lv_git(scr, by + 1, rx + 2, bot_h - 2, half - 4, g)
-        scr.box(by, rx + half, bot_h, rw - half, "Agents & skills")
-        self.lv_agents(scr, by + 1, rx + half + 2, bot_h - 2, rw - half - 4, cur, s)
+        self.box_limits(scr, by, rx + half, bot_h, rw - half, cur, root)
 
     def lv_tree(self, scr, y, x, h, w, cur, s, root):
         scr.box(y, x, h, w)
@@ -1687,12 +1689,15 @@ class App:
             elif not g["ahead"] and not g["behind"]:
                 scr.put(r, cx, "✓ up to date", C["teal"])
             else:
+                end = x + w
                 for arrow, n, attr, word in (("↑", g["ahead"], C["rose"], "push"), ("↓", g["behind"], C["sand"], "pull")):
-                    if not n:
+                    if not n or cx >= end:
                         continue
-                    cx += scr.put(r, cx, f"{arrow}{n} ", attr | curses.A_BOLD)
-                    cx += scr.squares(r, cx, [(min(n, 5), attr)]) + 1
-                    cx += scr.put(r, cx, f"to {word}", C["dim"]) + 2
+                    cx += scr.put(r, cx, f"{arrow}{n} ", attr | curses.A_BOLD, end - cx)
+                    fit = min(n, 5, max(0, (end - cx) // 2))
+                    cx += scr.squares(r, cx, [(fit, attr)]) + 1 if fit else 0
+                    if cx < end:
+                        cx += scr.put(r, cx, f"to {word}", C["dim"], end - cx) + 2
             r += 1
 
         # working tree diff stat, GitHub style
@@ -1817,11 +1822,30 @@ class App:
                 scr.put(r, x + 9, ln, attr, w - 9)
                 r += 1
 
-        room = h - 1
+        room = y + h - r
         earlier = list(s.prompts)[:-1][::-1]
         todo_rows = min(len(s.todos), 8)
-        # prompt gets the most room, recap a third; earlier prompts and todos take what is left
-        block("Prompt", s.prompt, C["fg"] | ITALIC, max(1, min(8, room // 2)))
+        # prompt first, then agents and skills, then recap; earlier prompts and todos take what is left
+        block("Prompt", s.prompt, C["fg"] | ITALIC, max(1, min(8, (room - 2) // 2)))
+        # agents and skills, one line each
+        if r < y + h:
+            n = cur["agents"]
+            launched = len(s.agents)
+            text = (f"{n} running" if n else "none running") + (f" · {launched} this session" if launched else "")
+            scr.kv(r, x, "Agents", text, C["rose"] | curses.A_BOLD if n else C["dim"], 8, w)
+            r += 1
+        if r < y + h:
+            extras = []
+            if s.mcp:
+                extras.append("mcp " + ", ".join(sorted(s.mcp, key=lambda k: -s.mcp[k])))
+            if s.web:
+                extras.append(f"{s.web} web")
+            text = ", ".join(reversed(s.skills)) if s.skills else "none used"
+            if extras:
+                text += "  ·  " + " · ".join(extras)
+            scr.kv(r, x, "Skills", text, C["fg"] if s.skills or extras else C["dim"], 8, w)
+            r += 1
+
         if s.recap:
             block("Recap", s.recap, C["dim"], max(1, min(4, (y + h - r) // 3)))
         if s.todos and r + 1 < y + h:
