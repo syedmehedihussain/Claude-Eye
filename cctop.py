@@ -1141,7 +1141,7 @@ class Screen:
 
 
 SPARK = " ▁▂▃▄▅▆▇█"
-SQ = "██"  # a terminal cell is about twice as tall as wide, so two blocks make a square
+SQ = "▆▆"  # two cells wide, three quarters tall: a square a bit smaller than the text height
 
 
 def sq_count(cols):
