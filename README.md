@@ -24,6 +24,8 @@ cd Claude-Eye
 cctop
 ```
 
+`./install.sh --skill` also installs the project-notes skill for Claude Code (see below).
+
 `./uninstall.sh` removes the link and the cache.
 
 ## Keys
@@ -59,9 +61,10 @@ Everything is read locally unless noted.
 ## Project notes
 
 The Projects tab is fed by a small convention: each project keeps notes in
-`~/Projects/<name>/_project/`, a Claude Code hook (`cctop hook`) records every session there
-automatically, and a few lines in `~/.claude/CLAUDE.md` make Claude keep `STATUS.md` and
-documents like a PRD or decision log up to date. Notes are kept out of git.
+`~/Projects/<name>/_project/`. A Claude Code hook (`cctop hook`) records every session there
+automatically, and the `project-notes` skill in `skills/` teaches Claude to resume from the
+notes and keep `STATUS.md` and documents like a proposal, PRD, DRD or decision log up to date,
+with templates for each. Notes are kept out of git.
 
 Setup and file formats: [docs/project-notes.md](docs/project-notes.md).
 

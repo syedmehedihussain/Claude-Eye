@@ -1,8 +1,9 @@
 # Project notes
 
 The Projects tab turns `~/Projects` into a list of what you are building with Claude Code,
-where you left off, and what comes next. It has two parts: a hook that records every
-session automatically, and instructions that make Claude keep the written docs current.
+where you left off, and what comes next. It has three parts: a hook that records every
+session automatically, a skill that teaches Claude how to keep the written docs current,
+and a few lines in CLAUDE.md that make sure it does.
 
 ## Layout
 
@@ -72,14 +73,31 @@ To record sessions that happened before the hook existed:
 python3 cctop.py backfill
 ```
 
-## 2. Instructions for Claude
+## 2. The skill
 
-Add something like this to `~/.claude/CLAUDE.md` so every session maintains the docs:
+`skills/project-notes/` is a Claude Code skill: how to find or create a project, how to
+resume from the notes, when and how to update STATUS.md, and templates for a proposal, PRD,
+DRD and decision log. It also ships `scripts/ensure_project.sh`, which creates
+`_project/STATUS.md` for a project and adds the git exclude, without ever overwriting a file.
+
+```sh
+./install.sh --skill    # links it into ~/.claude/skills/project-notes
+```
+
+Start a new Claude Code session to load it. Claude uses it on its own when you continue or
+start a project, or you can ask: "where did we leave off", "update the project status",
+"write a PRD for this".
+
+## 3. Instructions for Claude
+
+The skill holds the details; CLAUDE.md is the always-on reminder to use it. Add something
+like this to `~/.claude/CLAUDE.md`:
 
 ```markdown
 # Project notes
 
 Every project lives in `~/Projects/<name>/` and keeps its notes in `~/Projects/<name>/_project/`.
+Use the project-notes skill for the details.
 
 When a session works on a project (not a one-off fix):
 
