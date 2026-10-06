@@ -561,6 +561,43 @@ def github_user():
     return m[1] if m else ""
 
 
+_activity_cache = {}
+
+
+def git_activity(cwd, days=371):
+    """Commits per day, push times (from the remote-tracking reflog) and ahead/behind counts."""
+    hit = _activity_cache.get(cwd)
+    if hit and time.time() - hit[0] < 30:
+        return hit[1]
+
+    def git(*args):
+        try:
+            out = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True, timeout=3)
+            return out.stdout.strip() if out.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    info = None
+    if git("rev-parse", "--show-toplevel"):
+        per_day = {}
+        commits = [int(t) for t in git("log", f"--since={days} days ago", "--format=%ct").split()]
+        for t in commits:
+            d = datetime.fromtimestamp(t).date()
+            per_day[d] = per_day.get(d, 0) + 1
+        upstream = git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+        pushes = []
+        if upstream:
+            for line in git("reflog", "show", "--date=unix", "--format=%gs|%gd", "refs/remotes/" + upstream).splitlines():
+                m = re.match(r"update by push\|.*@\{(\d+)\}", line)
+                if m:
+                    pushes.append(int(m[1]))
+        lr = git("rev-list", "--left-right", "--count", "@{u}...HEAD").split() if upstream else []
+        info = {"per_day": per_day, "commits": commits, "pushes": pushes, "upstream": upstream,
+                "behind": int(lr[0]) if lr else 0, "ahead": int(lr[1]) if lr else 0}
+    _activity_cache[cwd] = (time.time(), info)
+    return info
+
+
 # ---------------------------------------------------------------- system data
 
 _proc_prev = {}
@@ -868,6 +905,33 @@ def backfill_main():
     print(f"recorded {n} sessions into {PROJECTS_HOME}/*/{META}/")
 
 
+ABOUT_SECTIONS = ("what we are building", "about", "overview", "summary")
+
+
+def project_about(folder, secs):
+    """What the project is: STATUS.md's own section, else a proposal/PRD section, else the README intro."""
+    for k in ABOUT_SECTIONS:
+        if secs.get(k):
+            return secs[k]
+    for doc in ("proposal.md", "prd.md"):
+        doc_secs = sections(frontmatter(read(os.path.join(folder, META, doc)))[1])
+        for k in ABOUT_SECTIONS + ("the idea", "problem", "goals"):
+            if doc_secs.get(k):
+                return doc_secs[k]
+    # README: the prose paragraphs before the first ## heading (no badges, nav links or tables)
+    paras, cur = [], []
+    for line in read(os.path.join(folder, "README.md")).splitlines() + [""]:
+        if line.startswith("## "):
+            break
+        line = re.sub(r"<[^>]*>|!\[[^\]]*\]\([^)]*\)|\*\*|`", "", line).lstrip("> ").strip()
+        if line and not line.startswith(("#", "|")):
+            cur.append(line)
+        elif cur:
+            paras.append(" ".join(cur))
+            cur = []
+    return "\n\n".join([t for t in paras if len(t.replace("·", " ").split()) >= 8][:2])
+
+
 def load_projects(live):
     dirs = project_dirs()
     out = []
@@ -894,8 +958,9 @@ def load_projects(live):
             times = [d[2] for d in docs if d[1] != "log.md"] or [os.path.getmtime(folder)]
         live_now = [r for r in live if any(inside(c, roots) for c in r["session"].cwds | {r["cwd"]})
                     or any(f["op"] != "read" and inside(p, roots) for p, f in r["session"].files.items())]
+        secs = sections(body)
         out.append({"name": name, "folder": folder, "roots": roots, "meta": meta,
-                    "sections": sections(body), "has_status": bool(status_text), "sessions": sess,
+                    "sections": secs, "about": project_about(folder, secs), "has_status": bool(status_text), "sessions": sess,
                     "docs": docs, "last": max(times), "live": live_now})
     out.sort(key=lambda p: (not p["live"], -p["last"]))
     return out
@@ -1065,9 +1130,10 @@ def logo_rows(text):
 def init_colors():
     curses.start_color()
     curses.use_default_colors()
-    names = list(PALETTE)
+    pal = dict(PALETTE, **heat_colors())
+    names = list(pal)
     for i, name in enumerate(names, start=1):
-        h = PALETTE[name]
+        h = pal[name]
         r, g, b = (int(h[j:j + 2], 16) for j in (1, 3, 5))
         if curses.COLORS >= 256 and curses.can_change_color():
             idx = 232 - len(names) + i  # borrow a few cube slots; ncurses restores them on exit
@@ -1076,17 +1142,25 @@ def init_colors():
         elif curses.COLORS >= 256:
             COLNUM[name] = nearest_256(r, g, b)
         else:
-            COLNUM[name] = BASIC[name]
+            COLNUM[name] = BASIC.get(name, BASIC["teal"])
     back = COLNUM["bg"] if THEME["paint"] else -1
     for i, name in enumerate(names, start=1):
         curses.init_pair(i, COLNUM[name], back)
         C[name] = curses.color_pair(i)
     if curses.COLORS < 256:
-        for name in ("dim", "faint", "muted", "line"):
+        for name in ("dim", "faint", "muted", "line", "heat1", "heat2"):
             C[name] |= curses.A_DIM
     hl = len(names) + 1
     curses.init_pair(hl, COLNUM["bg"], COLNUM["sand"])
     C["hl"] = curses.color_pair(hl) | curses.A_BOLD
+
+
+def heat_colors():
+    """Four heatmap greens: the theme's green mixed into the background, GitHub style."""
+    hexes = lambda h: [int(h[j:j + 2], 16) for j in (1, 3, 5)]
+    bg, fg = hexes(PALETTE["bg"]), hexes(PALETTE["teal"])
+    return {f"heat{k}": "#" + "".join(f"{round(b + (f - b) * mix):02x}" for b, f in zip(bg, fg))
+            for k, mix in enumerate((0.3, 0.5, 0.75, 1.0), start=1)}
 
 
 def nearest_256(r, g, b):
@@ -2230,8 +2304,9 @@ class App:
             scr.put(r, cx + cells + 2, f"{done}/{len(steps)} next steps done", C["dim"], rw - (cx - rx) - cells - 4)
 
         rest = h - top_h
-        mid_h = max(4, rest // 2 + 1)
-        bot_h = rest - mid_h
+        # bottom row wants 13 lines (3 stat rows, a gap, a 7-day heatmap) when the middle keeps 6
+        bot_h = max(rest // 2 - 1, min(13, rest - 6))
+        mid_h = rest - bot_h
         left_off = sec.get("where we left off") or sec.get("status") or ""
         if not left_off and last:
             left_off = last.get("recap") or f"Last prompt: {last.get('last_prompt', '')}"
@@ -2247,18 +2322,63 @@ class App:
 
         if bot_h >= 3:
             by = my + mid_h
-            scr.box(by, rx, bot_h, rw, "Recent sessions")
-            if not sess:
-                scr.put(by + 1, rx + 2, "sessions show up here after the next claude reply in this project", C["dim"], rw - 4)
-            for i, e in enumerate(sess[:bot_h - 2]):
-                r = by + 1 + i
-                stamp = e["updated"][5:16].replace("T", " ")
-                scr.put(r, rx + 2, stamp, C["dim"])
-                n = scr.put(r, rx + 14, e["title"] or "untitled", C["fg"] if i == 0 else C["teal"], rw // 3)
-                delta = f"+{e['added']} −{e['removed']}" if e.get("added") or e.get("removed") else ""
-                scr.put(r, rx + 16 + n, e.get("last_prompt", ""), C["muted"] | ITALIC, rw - 20 - n - len(delta))
-                if delta:
-                    scr.put(r, rx + rw - 2 - len(delta), delta, C["teal"])
+            about = p["about"] or "add a What we are building section to STATUS.md"
+            if rw >= 70:
+                half = rw // 2
+                self.text_box(scr, by, rx, bot_h, half, "What we are building", about)
+                scr.box(by, rx + half, bot_h, rw - half, "Activity")
+                self.proj_activity(scr, by + 1, rx + half + 2, bot_h - 2, rw - half - 4, p)
+            else:
+                self.text_box(scr, by, rx, bot_h, rw, "What we are building", about)
+
+    def proj_activity(self, scr, y, x, h, w, p):
+        a = git_activity(p["folder"])
+        if not a:
+            scr.put(y, x, "not a git repo · no commits to show", C["dim"], w)
+            return
+        now = time.time()
+        week = [t for t in a["commits"] if now - t < 7 * 86400]
+        last_c = f" · last {fmt_dur(now - a['commits'][0])} ago" if a["commits"] else ""
+        if not a["upstream"]:
+            push = ("no upstream branch", C["dim"])
+        else:
+            state = "up to date" if not a["ahead"] and not a["behind"] else \
+                " · ".join(t for t in (f"{a['ahead']} to push" if a["ahead"] else "",
+                                       f"{a['behind']} to pull" if a["behind"] else "") if t)
+            last_p = f" · last {fmt_dur(now - a['pushes'][0])} ago" if a["pushes"] else ""
+            push = (f"{len(a['pushes'])} recorded · {state}{last_p}", C["sand"] if a["ahead"] else None)
+        sess = p["sessions"]
+        days_on = {e["updated"][:10] for e in sess} | {e.get("started", "")[:10] for e in sess} - {""}
+        rows = [("Commits", f"{len(a['commits'])} in the past year · {len(week)} this week{last_c}", None),
+                ("Pushes", *push),
+                ("Claude", f"{len(sess)} session{'s' * (len(sess) != 1)} on {len(days_on)} day{'s' * (len(days_on) != 1)}" if sess else "no sessions recorded yet",
+                 None if sess else C["dim"])]
+        heat_h = 7 if h >= 8 else 1  # keep the full calendar; drop stat rows first when short
+        rows = rows[:max(0, h - heat_h)]
+        gap = 1 if rows and h >= len(rows) + heat_h + 1 else 0
+        for i, (k, v, attr) in enumerate(rows):
+            scr.kv(y + i, x, k, v, attr, 9, w)
+        self.heatmap(scr, y + len(rows) + gap, x, w, heat_h, a["per_day"])
+
+    def heatmap(self, scr, y, x, w, rows, per_day):
+        """GitHub-style commit calendar: one square per day, weeks as columns (or one strip of days)."""
+        today = datetime.now().date()
+        if rows == 7:
+            lw = 4
+            weeks = max(1, sq_count(w - lw - 1))
+            start = today - timedelta(days=today.weekday() + 7 * (weeks - 1))
+            for d, name in ((0, "Mon"), (2, "Wed"), (4, "Fri")):
+                scr.put(y + d, x, name, C["dim"])
+            days = [(start + timedelta(days=i), i // 7, i % 7) for i in range((today - start).days + 1)]
+        else:
+            lw = 0
+            n = sq_count(w)
+            days = [(today - timedelta(days=n - 1 - i), i, 0) for i in range(n)]
+        top = max(per_day.values(), default=0)
+        for day, col, row in days:
+            c = per_day.get(day, 0)
+            lvl = 0 if not c else min(4, 1 + int(3 * (c - 1) / max(1, top - 1)) if top > 1 else 4)
+            scr.put(y + row, x + lw + 2 * col, SQ, C[f"heat{lvl}"] if lvl else C["faint"])
 
     def text_box(self, scr, y, x, h, w, title, text):
         scr.box(y, x, h, w, title)

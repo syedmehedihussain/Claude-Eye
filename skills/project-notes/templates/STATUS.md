@@ -6,6 +6,10 @@ paths: [{{paths}}]
 updated: {{date}}
 ---
 
+## What we are building
+
+{{summary}}
+
 ## Where we left off
 
 Project created. Nothing built yet.

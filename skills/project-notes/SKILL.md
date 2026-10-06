@@ -63,6 +63,8 @@ for every small edit.
 
 - **Frontmatter:** `status` is `active`, `paused`, `done` or `idea`. Bump `updated:` to today.
   Keep `summary:` to one line. Add to `paths:` when code turns up somewhere new.
+- **What we are building:** a short paragraph on what the project is and what it does once
+  finished. The cctop Projects tab shows it. Rewrite it only when the idea itself changes.
 - **Where we left off:** 2 to 5 sentences on what was just done and the current state, including
   anything half-finished or broken. Replace the previous text; history belongs in the log.
 - **Next steps:** a short checklist (`- [ ]` / `- [x]`). Tick finished items, drop stale ones,

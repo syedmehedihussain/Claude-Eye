@@ -10,7 +10,7 @@ Single Python file, standard library only, nothing to install beyond Python 3.9+
 | Key | Tab | What it shows |
 |-----|-----|---------------|
 | `1` | Overview | The logo and three quiet sections: limits (5h and weekly percent used, reset times, a time track and where the current pace ends up), live sessions by project, and a one-line system summary |
-| `2` | Projects | Every project in `~/Projects`: status, where you left off, next steps, docs and recent sessions |
+| `2` | Projects | Every project in `~/Projects`: status, what you are building, where you left off, next steps, docs, and commit and push activity with a heatmap |
 | `3` | Live | Everything about each running session: activity feed, tokens, tools, files touched, agents, skills, MCP servers, process stats, prompt history |
 | `4` | Usage | Tokens by hour, last 7 days, models and projects |
 | `5` | System | CPU, memory, swap, disk, battery, temperatures, fan, load, short history graphs |
