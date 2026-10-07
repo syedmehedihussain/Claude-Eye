@@ -1,0 +1,60 @@
+name: Bug report
+description: Something in cctop does not work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for the report. Please do not paste Claude Code transcripts, prompts or
+        tokens. Security problems go through the private process in SECURITY.md instead.
+  - type: input
+    id: version
+    attributes:
+      label: cctop version
+      description: Shown at the top of the window, for example cctop-0.3.0.
+      placeholder: "0.3.0"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System
+      description: Linux distribution, terminal, terminal size, and the output of python3 --version.
+      placeholder: "Arch Linux, foot 1.20, 120x35, Python 3.13.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: tab
+    attributes:
+      label: Where does it happen?
+      options:
+        - Overview
+        - Projects
+        - Live
+        - Usage
+        - System
+        - The hook or project notes
+        - Install or uninstall
+        - Somewhere else
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run cctop in a 100x30 terminal
+        2. Press 2
+        3. ...
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshot or error output
+      description: A screenshot helps with visual problems. Remove anything private first.

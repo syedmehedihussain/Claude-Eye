@@ -1,0 +1,27 @@
+name: Feature request
+description: Suggest an idea for cctop.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        cctop stays a single Python file with no dependencies. Ideas that fit inside that
+        are the easiest to take on.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How could cctop help? A rough sketch of the screen is welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Other options you considered
