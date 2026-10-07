@@ -10,12 +10,13 @@
 </p>
 
 <p align="center">
+  <a href="https://syedmehedihussain.github.io/cctop/">Website</a> ·
   <a href="#install">Install</a> ·
   <a href="#usage">Usage</a> ·
   <a href="#configuration">Configuration</a> ·
   <a href="#accessibility">Accessibility</a> ·
   <a href="#privacy-and-data">Privacy</a> ·
-  <a href="https://github.com/syedmehedihussain/Claude-Eye/releases">Releases</a>
+  <a href="https://github.com/syedmehedihussain/cctop/releases">Releases</a>
 </p>
 
 <p align="center">
@@ -112,7 +113,7 @@ The screenshots use made-up demo data.
 ### Latest version
 
 ```sh
-git clone https://github.com/syedmehedihussain/Claude-Eye.git cctop
+git clone https://github.com/syedmehedihussain/cctop.git
 cd cctop
 ./install.sh
 cctop
@@ -129,13 +130,13 @@ in [Project notes](#project-notes):
 ### A specific version
 
 Every release is tagged `vX.Y.Z` and listed on the
-[Releases page](https://github.com/syedmehedihussain/Claude-Eye/releases). What changed in each
+[Releases page](https://github.com/syedmehedihussain/cctop/releases). What changed in each
 version is in the [changelog](CHANGELOG.md).
 
 Clone one version:
 
 ```sh
-git clone --branch v0.3.0 --depth 1 https://github.com/syedmehedihussain/Claude-Eye.git cctop
+git clone --branch v0.3.0 --depth 1 https://github.com/syedmehedihussain/cctop.git
 cd cctop
 ./install.sh
 ```
@@ -145,7 +146,7 @@ Or download only the program file of one version, without git:
 ```sh
 mkdir -p ~/.local/bin
 curl -fL -o ~/.local/bin/cctop \
-  https://raw.githubusercontent.com/syedmehedihussain/Claude-Eye/v0.3.0/cctop.py
+  https://raw.githubusercontent.com/syedmehedihussain/cctop/v0.3.0/cctop.py
 chmod +x ~/.local/bin/cctop
 ```
 

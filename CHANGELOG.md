@@ -66,4 +66,4 @@ The first public version.
 - GitHub dark theme, with the Last Horizon theme as an option.
 - `install.sh` and `uninstall.sh`.
 
-[0.3.0]: https://github.com/syedmehedihussain/Claude-Eye/releases/tag/v0.3.0
+[0.3.0]: https://github.com/syedmehedihussain/cctop/releases/tag/v0.3.0

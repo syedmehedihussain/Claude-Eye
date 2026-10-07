@@ -3,7 +3,7 @@
 ## Supported versions
 
 Security fixes go into the latest release only. Please update to the newest version on the
-[Releases page](https://github.com/syedmehedihussain/Claude-Eye/releases) before you report.
+[Releases page](https://github.com/syedmehedihussain/cctop/releases) before you report.
 
 | Version | Supported |
 |---------|-----------|
@@ -23,7 +23,7 @@ cctop reads sensitive local data, so these areas matter most:
 ## How to report
 
 Report a vulnerability privately through GitHub:
-[Report a vulnerability](https://github.com/syedmehedihussain/Claude-Eye/security/advisories/new).
+[Report a vulnerability](https://github.com/syedmehedihussain/cctop/security/advisories/new).
 
 Please do not open a public issue, and do not include real tokens or transcripts. Describe the
 steps to reproduce the problem and what an attacker could do with it.
