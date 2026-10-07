@@ -190,7 +190,7 @@
   <div class="wrap">
 
     <section class="hero" aria-labelledby="title">
-      <p class="eyebrow"><span class="dot" aria-hidden="true"></span> Version 0.3.0 <span aria-hidden="true">·</span> Linux <span aria-hidden="true">·</span> MIT licence</p>
+      <p class="eyebrow"><span class="dot" aria-hidden="true"></span> Version 0.4.0 <span aria-hidden="true">·</span> Linux <span aria-hidden="true">·</span> MIT licence</p>
       <h1 id="title">cctop</h1>
       <p class="lead">A terminal dashboard for Claude Code. See how much of your plan is left, what every session is doing, and where you left off in each project, next to the health of your machine.</p>
       <div class="actions">
@@ -254,7 +254,7 @@
 
       <div class="panel" role="tabpanel" id="panel-usage" aria-labelledby="tab-usage">
         <h3>Usage</h3>
-        <p>Tokens by hour for any of the last seven days, a seven-day summary, and the split by model and by project.</p>
+        <p>Tokens by hour for any of the last seven days, a seven-day summary, and the split by model and by project, with an estimate of what the same usage would cost at Claude API prices.</p>
         <figure class="screen" style="margin-left:0;margin-right:0"><img src="media/usage.png" width="2304" height="1360" loading="lazy"
           alt="The Usage tab: a bar chart of tokens by hour for one day, with the last seven days, the share per model and the share per project below it."></figure>
       </div>
@@ -302,7 +302,7 @@ cctop</code></pre></div>
         </div>
         <div class="step">
           <h3>A specific version</h3>
-          <div class="code"><pre><code>git clone --branch v0.3.0 --depth 1 https://github.com/syedmehedihussain/cctop.git
+          <div class="code"><pre><code>git clone --branch v0.4.0 --depth 1 https://github.com/syedmehedihussain/cctop.git
 cd cctop
 ./install.sh</code></pre></div>
           <p>Every release is tagged and listed on the <a href="https://github.com/syedmehedihussain/cctop/releases">Releases page</a>. Changes are in the <a href="https://github.com/syedmehedihussain/cctop/blob/main/CHANGELOG.md">changelog</a>.</p>
@@ -311,7 +311,7 @@ cd cctop
           <h3>Only the program file</h3>
           <div class="code"><pre><code>mkdir -p ~/.local/bin
 curl -fL -o ~/.local/bin/cctop \
-  https://raw.githubusercontent.com/syedmehedihussain/cctop/v0.3.0/cctop.py
+  https://raw.githubusercontent.com/syedmehedihussain/cctop/v0.4.0/cctop.py
 chmod +x ~/.local/bin/cctop</code></pre></div>
           <p>The single file is the whole dashboard. To update, run the same command with the new version number.</p>
         </div>
@@ -339,7 +339,7 @@ chmod +x ~/.local/bin/cctop</code></pre></div>
           <tr><td><kbd>Left</kbd>, <kbd>Right</kbd></td><td>Usage: previous or next day. Live: previous or next session</td></tr>
           <tr><td><kbd>Up</kbd>, <kbd>Down</kbd></td><td>Projects: select a project</td></tr>
           <tr><td><kbd>o</kbd></td><td>Projects: open the project folder</td></tr>
-          <tr><td><kbd>t</kbd></td><td>Usage: all tokens, input and output, or output only</td></tr>
+          <tr><td><kbd>t</kbd></td><td>Usage: all tokens, input and output, output only, or cost at API prices</td></tr>
           <tr><td><kbd>r</kbd></td><td>Reload all data</td></tr>
           <tr><td><kbd>q</kbd></td><td>Quit</td></tr>
         </tbody>

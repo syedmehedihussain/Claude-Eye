@@ -60,7 +60,52 @@ BASIC = {"fg": curses.COLOR_WHITE, "muted": curses.COLOR_WHITE, "dim": curses.CO
 C = {}
 COLNUM = {}
 
-METRICS = [("all", "all tokens"), ("io", "input + output"), ("out", "output only")]
+METRICS = [("all", "all tokens"), ("io", "input + output"), ("out", "output only"), ("cost", "cost at API prices")]
+
+# What the same tokens would cost on the Claude API, in dollars per million tokens:
+# (input, output, cache read). Cache writes cost 1.25x input for the 5-minute cache and 2x for
+# the 1-hour cache; fast mode doubles everything. Subscription plans are not billed this way;
+# this is an estimate of the value used. Source: Anthropic API pricing, 2026-09.
+PRICES = {
+    "claude-fable-5-1": (10, 50, 0.25), "claude-mythos-5-1": (10, 50, 0.25),
+    "claude-fable-5": (10, 50, 1.00), "claude-mythos-5": (10, 50, 1.00),
+    "claude-opus-5-5": (4, 20, 0.20), "claude-opus-5": (5, 25, 0.50),
+    "claude-opus-4-8": (5, 25, 0.50), "claude-opus-4-7": (5, 25, 0.50), "claude-opus-4-6": (5, 25, 0.50),
+    "claude-sonnet-5-5": (2, 10, 0.20), "claude-sonnet-5": (2, 10, 0.20), "claude-sonnet-4-6": (3, 15, 0.30),
+    "claude-haiku-4-5": (1, 5, 0.10),
+}
+FAMILY_PRICE = {"fable": "claude-fable-5-1", "mythos": "claude-mythos-5-1", "opus": "claude-opus-5-5",
+                "sonnet": "claude-sonnet-5-5", "haiku": "claude-haiku-4-5"}
+UNPRICED = set()  # models priced by their family because they are not in PRICES
+
+
+def price_of(model):
+    """(input, output, cache read) per million tokens; the longest known id the model starts with,
+    else the current model of its family."""
+    model = (model or "").lower()
+    hit = max((k for k in PRICES if model.startswith(k)), key=len, default=None)
+    if hit:
+        return PRICES[hit]
+    UNPRICED.add(model)
+    fam = next((f for f in FAMILY_PRICE if f in model), "opus")
+    return PRICES[FAMILY_PRICE[fam]]
+
+
+def usage_cost(model, u):
+    """Dollars one reply would cost on the API, from its usage block."""
+    pin, pout, pread = price_of(model)
+    cc = u.get("cache_creation") or {}
+    w1h = cc.get("ephemeral_1h_input_tokens", 0) or 0
+    w5m = (u.get("cache_creation_input_tokens", 0) or 0) - w1h
+    cost = ((u.get("input_tokens", 0) or 0) * pin + (u.get("output_tokens", 0) or 0) * pout
+            + w5m * pin * 1.25 + w1h * pin * 2 + (u.get("cache_read_input_tokens", 0) or 0) * pread) / 1e6
+    return cost * 2 if u.get("speed") == "fast" else cost
+
+
+def fmt_usd(v):
+    if v >= 1000:
+        return f"${v / 1000:.1f}k"
+    return f"${v:.0f}" if v >= 100 else f"${v:.2f}"
 TOOL_KEYS = ("description", "command", "file_path", "pattern", "query", "url", "prompt", "skill")
 
 
@@ -197,6 +242,7 @@ class Session:
         self.last_ts = None
         self.n_prompts = 0
         self.tokens = [0, 0, 0, 0]  # input, output, cache write, cache read
+        self.cost_usd = 0.0         # the same tokens at API prices
         self.mcp = defaultdict(int)
         self.web = 0
         self.activity = deque(maxlen=200)  # dicts: ts, name, summary, status, end
@@ -211,7 +257,7 @@ class Usage:
     def __init__(self):
         self.offsets = {}
         self.seen = set()
-        self.events = []  # (local datetime, model, project, sid, inp, out, cache_w, cache_r)
+        self.events = []  # (local datetime, model, project, sid, inp, out, cache_w, cache_r, cost $)
         self.sessions = {}
 
     def session(self, sid):
@@ -388,17 +434,21 @@ class Usage:
         out = u.get("output_tokens", 0) or 0
         for i, v in enumerate((inp, out, cw, cr)):
             s.tokens[i] += v
+        cost = usage_cost(model, u)
+        s.cost_usd += cost
         if not sub:
             s.model = model or s.model
             s.ctx = inp + cw + cr
             s.ctx_peak = max(s.ctx_peak, s.ctx)
         ts = parse_ts(d.get("timestamp"))
         if ts:
-            self.events.append((ts, model, s.cwd, sid, inp, out, cw, cr))
+            self.events.append((ts, model, s.cwd, sid, inp, out, cw, cr, cost))
 
 
 def metric_value(e, metric):
-    _, _, _, _, inp, out, cw, cr = e
+    _, _, _, _, inp, out, cw, cr, cost = e
+    if metric == "cost":
+        return cost
     if metric == "out":
         return out
     if metric == "io":
@@ -786,6 +836,7 @@ def record_entry(s, name, folder, meta_dir, changed):
         "added": sum(s.files[p]["added"] for p in changed),
         "removed": sum(s.files[p]["removed"] for p in changed),
         "tokens": sum(s.tokens),
+        "cost": round(s.cost_usd, 4),
     }
     tmp = f"{path}.{os.getpid()}.tmp"
     with open(tmp, "w") as f:
@@ -904,7 +955,7 @@ def load_projects(live):
                 log = json.load(f)
         except (OSError, ValueError):
             log = {}
-        sess = sorted(log.values(), key=lambda e: e["updated"], reverse=True)
+        sess = sorted((dict(e, sid=sid) for sid, e in log.items()), key=lambda e: e["updated"], reverse=True)
         docs = []
         for f in sorted(glob.glob(os.path.join(meta_dir, "*"))):
             base = os.path.basename(f)
@@ -1065,7 +1116,7 @@ def git_details(path):
 
 # ---------------------------------------------------------------- drawing
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 ITALIC = getattr(curses, "A_ITALIC", 0)
 TABS = ["Overview", "Projects", "Live", "Usage", "System"]
 
@@ -1515,12 +1566,14 @@ class App:
         projects = defaultdict(int)
         kinds = [0, 0, 0, 0]
         today = today_msgs = 0
+        day_cost = week_cost = 0.0
         for e in self.usage.events:
             ts = e[0]
             v = metric_value(e, m)
             if ts < week_start:
                 continue
             days[(ts - week_start).days] += v
+            week_cost += e[8]
             models[short_model(e[1])] += v
             projects[self.session_project(e[3])] += v
             for i in range(4):
@@ -1530,10 +1583,11 @@ class App:
                 today_msgs += 1
             if sel <= ts < sel + timedelta(days=1):
                 hours[ts.hour] += v
+                day_cost += e[8]
 
         return dict(hours=hours, days=days, week_start=week_start, models=models,
                     projects=projects, kinds=kinds, today=today, today_msgs=today_msgs,
-                    now=now, sel=sel)
+                    day_cost=day_cost, week_cost=week_cost, now=now, sel=sel)
 
     # ---- frame
     def draw(self):
@@ -1561,7 +1615,8 @@ class App:
 
         keys = []
         if name == "usage":
-            keys = [("t", METRICS[self.metric][1].capitalize()), ("←→", "Day")]
+            label = METRICS[self.metric][1]
+            keys = [("t", label[:1].upper() + label[1:]), ("←→", "Day")]
         elif name == "live" and len(self.live) > 1:
             keys = [("←→", "Session")]
         elif name == "projects" and self.projects:
@@ -1727,6 +1782,21 @@ class App:
         name = os.path.basename(hit[1])
         return name if hit[1] != os.path.realpath(HOME) else "~"
 
+    def fmt_metric(self, v):
+        return fmt_usd(v) if METRICS[self.metric][0] == "cost" else fmt_n(v)
+
+    def project_cost(self, sess):
+        """Dollars at API prices for a project's recorded sessions: the cost the hook saved, else
+        the cost from a transcript that is still on disk. Returns (dollars, sessions priced)."""
+        total, priced = 0.0, 0
+        for e in sess:
+            live = self.usage.sessions.get(e.get("sid"))
+            if live and live.cost_usd:
+                total, priced = total + live.cost_usd, priced + 1
+            elif "cost" in e:
+                total, priced = total + e["cost"], priced + 1
+        return total, priced
+
     def session_project(self, sid):
         """The project a session belongs to, as a short path; same rule as the Overview and Live tabs.
         Worked out again only when the session has moved on, so old sessions cost one git call."""
@@ -1831,12 +1901,15 @@ class App:
         scr.box(y, x, chart_h, w, f"{label} by hour")
         vals = a["hours"]
         total, peak = sum(vals), max(vals)
-        info = f"{fmt_n(total)} total"
+        if METRICS[self.metric][0] == "cost":
+            info = f"≈ {fmt_usd(total)} at API prices"
+        else:
+            info = f"{fmt_n(total)} total · ≈ {fmt_usd(a['day_cost'])} at API prices"
         if peak:
             info += f" · peak {vals.index(peak):02d}:00"
         scr.put(y + 1, x + 2, info, C["dim"])
         k = a["kinds"]
-        kinds = f"in {fmt_n(k[0])} · out {fmt_n(k[1])} · cache w {fmt_n(k[2])} · cache r {fmt_n(k[3])} (7d)"
+        kinds = f"in {fmt_n(k[0])} · out {fmt_n(k[1])} · cache w {fmt_n(k[2])} · cache r {fmt_n(k[3])} · ≈ {fmt_usd(a['week_cost'])} (7d)"
         if len(info) + len(kinds) + 6 < w:
             scr.put(y + 1, x + w - 2 - len(kinds), kinds, C["dim"])
 
@@ -1878,7 +1951,7 @@ class App:
             hl = 6 - i == self.day
             scr.put(r, x + 2, d.strftime("%a %d"), C["fg"] | curses.A_BOLD if hl else C["teal"])
             scr.hbar(r, x + 9, bar_w, days[i] / peak, C["sand"] if hl else C["muted"])
-            val = fmt_n(days[i]) if days[i] else "-"
+            val = self.fmt_metric(days[i]) if days[i] else "-"
             scr.put(r, x + w - 2 - len(val), val, C["fg"] if hl else C["dim"])
 
     def box_ranked(self, scr, y, x, h, w, title, data, paths=False):
@@ -2296,6 +2369,7 @@ class App:
         live = ", ".join(r["name"] for r in p["live"])
         docs = " · ".join(d[0] for d in p["docs"]) or "none yet"
         tokens = sum(e.get("tokens", 0) for e in sess)
+        cost, priced = self.project_cost(sess)
         extra = [short_path(r) for r in p["roots"][1:]]
         info = [
             ("Summary", meta.get("summary") or (last["title"] if last and last["title"] else "-"), C["fg"] | curses.A_BOLD),
@@ -2305,7 +2379,8 @@ class App:
             ("Folder", short_path(p["folder"]) + (f" · code in {', '.join(extra)}" if extra else ""), None),
             ("Repo", (g["repo"] + (f" · {g['branch']}" if g["branch"] else "")) if g else "not a git repo",
              None if g else C["dim"]),
-            ("Sessions", f"{len(sess)} recorded · {fmt_n(tokens)} tokens" if sess else "none recorded yet",
+            ("Sessions", (f"{len(sess)} recorded · {fmt_n(tokens)} tokens · ≈ {fmt_usd(cost)} at API prices"
+                          + (f" ({priced} of {len(sess)} priced)" if priced < len(sess) else "")) if sess else "none recorded yet",
              None if sess else C["dim"]),
             ("Docs", docs, None if p["docs"] else C["dim"]),
         ]

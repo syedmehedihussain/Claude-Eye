@@ -9,7 +9,7 @@ By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 Open an issue with the **Bug report** form. Please include:
 
-- the cctop version (shown at the top of the window, for example `cctop-0.3.0`)
+- the cctop version (shown at the top of the window, for example `cctop-0.4.0`)
 - your Linux distribution, terminal and its size, and `python3 --version`
 - what you did, what you expected and what happened instead
 - a screenshot if the problem is visual

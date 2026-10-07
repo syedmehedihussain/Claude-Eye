@@ -4,6 +4,15 @@ All notable changes to cctop are listed here, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and version numbers follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-07
+
+### Added
+
+- Cost estimates at Claude API prices: the day and the week on the Usage tab, a cost view on
+  the `t` key that shows every chart in dollars, and the cost of each project on the Projects
+  tab. Prices are per model, with separate rates for cache writes (5-minute and 1-hour) and
+  cache reads. The hook saves each session's cost, so it stays after old transcripts are deleted.
+
 ## [0.3.0] - 2026-10-07
 
 ### Added
@@ -66,4 +75,5 @@ The first public version.
 - GitHub dark theme, with the Last Horizon theme as an option.
 - `install.sh` and `uninstall.sh`.
 
+[0.4.0]: https://github.com/syedmehedihussain/cctop/releases/tag/v0.4.0
 [0.3.0]: https://github.com/syedmehedihussain/cctop/releases/tag/v0.3.0

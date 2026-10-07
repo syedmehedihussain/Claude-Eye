@@ -11,8 +11,8 @@ body:
     id: version
     attributes:
       label: cctop version
-      description: Shown at the top of the window, for example cctop-0.3.0.
-      placeholder: "0.3.0"
+      description: Shown at the top of the window, for example cctop-0.4.0.
+      placeholder: "0.4.0"
     validations:
       required: true
   - type: input

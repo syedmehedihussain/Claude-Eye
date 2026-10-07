@@ -79,7 +79,7 @@ current prompt, agents, skills and todos, the repository status and the plan lim
 ### Usage
 
 Tokens by hour for any of the last seven days, a seven-day summary, and the split by model and
-by project.
+by project, with an estimate of what the same usage would cost at Claude API prices.
 
 <p align="center">
   <img src="docs/media/usage.png" width="860"
@@ -136,7 +136,7 @@ version is in the [changelog](CHANGELOG.md).
 Clone one version:
 
 ```sh
-git clone --branch v0.3.0 --depth 1 https://github.com/syedmehedihussain/cctop.git
+git clone --branch v0.4.0 --depth 1 https://github.com/syedmehedihussain/cctop.git
 cd cctop
 ./install.sh
 ```
@@ -146,21 +146,21 @@ Or download only the program file of one version, without git:
 ```sh
 mkdir -p ~/.local/bin
 curl -fL -o ~/.local/bin/cctop \
-  https://raw.githubusercontent.com/syedmehedihussain/cctop/v0.3.0/cctop.py
+  https://raw.githubusercontent.com/syedmehedihussain/cctop/v0.4.0/cctop.py
 chmod +x ~/.local/bin/cctop
 ```
 
 The single file is the whole dashboard. The clone also includes the install scripts, the
 project-notes skill and the documentation.
 
-To see which version you run, look at the top of the window: the title reads `cctop-0.3.0`.
+To see which version you run, look at the top of the window: the title reads `cctop-0.4.0`.
 
 ### Update
 
 ```sh
 cd cctop
 git pull                 # the latest version
-git checkout v0.3.0      # or one specific version
+git checkout v0.4.0      # or one specific version
 ```
 
 The installed command is a link to the cloned file, so it updates with the clone. If you
@@ -187,7 +187,7 @@ Run `cctop` in any terminal. It refreshes by itself; there is nothing to configu
 | `Left`, `Right` (or `h`, `l`) | Usage: previous or next day. Live: previous or next session |
 | `Up`, `Down` (or `k`, `j`) | Projects: select a project |
 | `o` | Projects: open the project folder in your file manager |
-| `t` | Usage: count all tokens, input and output only, or output only |
+| `t` | Usage: count all tokens, input and output only, output only, or cost at API prices |
 | `r` | Reload all data |
 | `q`, `Esc` | Quit |
 
@@ -204,6 +204,11 @@ in the Live tab.
 
 - "All tokens" is mostly cache reads, which are cheap and count far less toward plan limits.
   Press `t` to count input and output only.
+- Costs are estimates of what the same tokens would cost on the Claude API, priced per model
+  for input, output, cache writes and cache reads. A Pro or Max plan is not billed this way; the
+  figure shows the value of what you used. The Usage tab shows it per day and per week, and the
+  Projects tab shows it per project. Models cctop does not know are priced like the current model
+  of their family.
 - Lines added and removed are estimated from Claude's edits as they happen.
 - Running agents are counted from subagent transcripts written in the last 90 seconds and from
   agent calls that are still in progress.
