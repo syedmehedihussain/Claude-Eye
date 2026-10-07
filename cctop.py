@@ -11,6 +11,7 @@ import glob
 import json
 import locale
 import os
+import random
 import re
 import shutil
 import socket
@@ -321,7 +322,8 @@ class Usage:
         s.pending[tid] = (name, summ)
         s.last_tool = summ
         path = inp.get("file_path") or inp.get("notebook_path")
-        act = {"ts": ts, "name": name, "summary": summ, "status": "run", "end": None, "path": path}
+        act = {"ts": ts, "name": name, "summary": summ, "status": "run", "end": None, "path": path,
+               "seen": time.monotonic()}
         s.activity.append(act)
         s.inflight[tid] = act
         if name.startswith("mcp__"):
@@ -1063,17 +1065,44 @@ def git_details(path):
 
 # ---------------------------------------------------------------- drawing
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 ITALIC = getattr(curses, "A_ITALIC", 0)
 TABS = ["Overview", "Projects", "Live", "Usage", "System"]
 
-# 8px-tall bitmaps, rendered two pixel rows per cell with half blocks
+# 8px-tall bitmaps, rendered two pixel rows per cell with half blocks; lowercase only
 LOGO = {
+    "a": ["......", "......", ".####.", "....##", ".#####", "##..##", ".#####", "......"],
+    "b": ["##....", "##....", "#####.", "##..##", "##..##", "##..##", "#####.", "......"],
     "c": ["......", "......", ".#####", "##....", "##....", "##....", ".#####", "......"],
-    "t": [".##...", ".##...", "######", ".##...", ".##...", ".##...", "..####", "......"],
+    "d": ["....##", "....##", ".#####", "##..##", "##..##", "##..##", ".#####", "......"],
+    "e": ["......", "......", ".####.", "##..##", "######", "##....", ".#####", "......"],
+    "f": ["..###", ".##..", "####.", ".##..", ".##..", ".##..", ".##..", "....."],
+    "g": ["......", "......", ".#####", "##..##", "##..##", ".#####", "....##", "#####."],
+    "h": ["##....", "##....", "#####.", "##..##", "##..##", "##..##", "##..##", "......"],
+    "i": ["##", "..", "##", "##", "##", "##", "##", ".."],
+    "j": ["..##", "....", "..##", "..##", "..##", "..##", "..##", "###."],
+    "k": ["##....", "##....", "##..##", "##.##.", "####..", "##.##.", "##..##", "......"],
+    "l": ["##.", "##.", "##.", "##.", "##.", "##.", ".##", "..."],
+    "m": ["........", "........", "#######.", "##.##.##", "##.##.##", "##.##.##", "##.##.##", "........"],
+    "n": ["......", "......", "#####.", "##..##", "##..##", "##..##", "##..##", "......"],
     "o": ["......", "......", ".####.", "##..##", "##..##", "##..##", ".####.", "......"],
     "p": ["......", "......", "#####.", "##..##", "##..##", "#####.", "##....", "##...."],
+    "q": ["......", "......", ".#####", "##..##", "##..##", ".#####", "....##", "....##"],
+    "r": [".....", ".....", "##.##", "###..", "##...", "##...", "##...", "....."],
+    "s": ["......", "......", ".#####", "##....", ".####.", "....##", "#####.", "......"],
+    "t": [".##...", ".##...", "######", ".##...", ".##...", ".##...", "..####", "......"],
+    "u": ["......", "......", "##..##", "##..##", "##..##", "##..##", ".#####", "......"],
+    "v": ["......", "......", "##..##", "##..##", "##..##", ".####.", "..##..", "......"],
+    "w": ["........", "........", "##.##.##", "##.##.##", "##.##.##", "##.##.##", ".######.", "........"],
+    "x": ["......", "......", "##..##", ".####.", "..##..", ".####.", "##..##", "......"],
+    "y": ["......", "......", "##..##", "##..##", "##..##", ".#####", "....##", "#####."],
+    "z": ["......", "......", "######", "...##.", "..##..", ".##...", "######", "......"],
     ".": ["..", "..", "..", "..", "..", "##", "##", ".."],
+    ",": ["..", "..", "..", "..", "..", "##", "##", "#."],
+    "?": [".####.", "##..##", "...##.", "..##..", "..##..", "......", "..##..", "......"],
+    "!": ["##", "##", "##", "##", "##", "..", "##", ".."],
+    "'": ["##", "##", "..", "..", "..", "..", "..", ".."],
+    " ": ["...", "...", "...", "...", "...", "...", "...", "..."],
 }
 
 
@@ -1081,10 +1110,190 @@ def logo_rows(text):
     rows = []
     for r in range(0, 8, 2):
         parts = []
-        for g in (LOGO[ch] for ch in text):
+        for g in (LOGO.get(ch, LOGO[" "]) for ch in text.lower()):
             parts.append("".join(" ▀▄█"[(a == "#") + 2 * (b == "#")] for a, b in zip(g[r], g[r + 1])))
         rows.append(" ".join(parts))
     return rows
+
+
+
+# ---- Overview title: a greeting for the time of day that turns into the logo after a few
+# seconds, with motion in the style of ttfx in Omarchy's screensaver. CCTOP_MOTION=off keeps
+# the greeting and drops the motion.
+
+GREETINGS = [  # (from this hour, options, short one): one that fits is picked at random,
+    # else the short one, else the shortest as plain text
+    (0, ["still up?", "late one, {u}?", "one more session?"], "still up?"),
+    (5, ["good morning.", "morning, {u}.", "have a good session."], "morning."),
+    (12, ["good afternoon.", "afternoon, {u}.", "have a good session."], "hi there."),
+    (17, ["good evening.", "evening, {u}.", "have a good session."], "evening."),
+    (22, ["still up?", "late one, {u}?", "one more session?"], "still up?"),
+]
+MOTION = os.environ.get("CCTOP_MOTION", "on").lower() not in ("0", "off", "no", "false")
+INTRO_HOLD, FX_IN, FX_OUT = 5.0, 1.2, 0.5  # seconds: greeting on screen, effect in, effect out
+SCRAMBLE = "▖▗▘▝▚▞▙▛▜▟░▒▓"
+GROW_S = 0.5  # seconds bars take to grow in when a view opens
+SHIMMER_EVERY, SHIMMER_S = 7.0, 1.4  # the settled logo shimmers for 1.4 s every 7 s
+
+
+def glow(f):
+    """Effect colours from cool to bright, f from 0 to 1."""
+    return (C["lav"], C["rose"], C["teal"])[min(2, max(0, int(f * 3)))]
+
+
+# Effects take cells (row, col, char, random 0-1, final attr) and progress p from 0 to 1, and
+# return what to draw now as (row, col, char, attr). At p = 1 every cell is in place.
+
+def fx_decrypt(cells, p, gw, tick):
+    """Each cell flickers through block shapes, then locks in at its own moment."""
+    out = []
+    for r, c, ch, u, final in cells:
+        lock = 0.2 + 0.7 * u
+        if p >= lock:
+            out.append((r, c, ch, final))
+        elif p >= lock * 0.4:
+            out.append((r, c, SCRAMBLE[(tick + 7 * c + 13 * r) % len(SCRAMBLE)], glow(c / gw)))
+    return out
+
+
+def fx_beams(cells, p, gw, tick):
+    """A slanted beam sweeps left to right; cells light up as it passes and cool down behind it."""
+    head = p * (gw + 22)
+    out = []
+    for r, c, ch, u, final in cells:
+        d = head - c - 2 * (r + 1)
+        if d >= 12:
+            out.append((r, c, ch, final))
+        elif d >= 2:
+            out.append((r, c, ch, glow(1 - (d - 2) / 10)))
+        elif d >= 0:
+            out.append((r, c, "█", C["fg"] | curses.A_BOLD))
+    return out
+
+
+def fx_assemble(cells, p, gw, tick):
+    """Cells fly out from the centre to their places, each with a small delay of its own."""
+    out = []
+    cx, cy = gw / 2, 1.5
+    for r, c, ch, u, final in cells:
+        q = min(1.0, (p - 0.35 * u) / 0.65)
+        if q > 0:
+            e = 1 - (1 - q) ** 3  # ease out
+            out.append((round(cy + (r - cy) * e), round(cx + (c - cx) * e), ch, final if q >= 1 else glow(u)))
+    return out
+
+
+def fx_slide(cells, p, gw, tick):
+    """Rows slide in from alternating sides, one after another."""
+    out = []
+    for r, c, ch, u, final in cells:
+        q = min(1.0, (p - 0.12 * (r + 1)) / 0.64)
+        if q > 0:
+            e = 1 - (1 - q) ** 3
+            off = (1 - e) * (gw + 10) * (-1 if r % 2 else 1)
+            out.append((r, round(c + off), ch, final if q >= 1 else glow(c / gw)))
+    return out
+
+
+def fx_rise(cells, p, gw, tick):
+    """Columns rise from below the bottom edge of the title, left to right in a wave. Rows under
+    the edge are not drawn, so the letters come up out of it."""
+    out = []
+    for r, c, ch, u, final in cells:
+        q = min(1.0, (p - 0.45 * c / gw) / 0.55)
+        if q > 0:
+            e = 1 - (1 - q) ** 3
+            row = round(r + (1 - e) * LOGO_ROWS)
+            if row < LOGO_ROWS:
+                out.append((row, c, ch, final if q >= 1 else glow(1 - (1 - e) * 0.9)))
+    return out
+
+
+def fx_shimmer(cells, p, gw, tick):
+    """Idle: a wave of the rise colours passes over the settled letters; nothing moves."""
+    head = p * (gw + 20)
+    out = []
+    for r, c, ch, u, final in cells:
+        d = head - c - 2 * r
+        out.append((r, c, ch, glow(1 - d / 12) if 0 <= d < 12 else final))
+    return out
+
+
+EFFECTS = [fx_decrypt, fx_beams, fx_assemble, fx_slide]  # for the greeting; the logo always rises
+LOGO_ROWS = 4  # block letters are 4 terminal rows tall
+
+
+class Intro:
+    """The Overview title: the greeting animates in with a small "cctop" above its right end,
+    stays until INTRO_HOLD, scrambles away with the label, then the logo rises from below."""
+
+    def __init__(self, user):
+        self.user = user or "you"
+        self.motion = MOTION
+        self.rng = random.Random()
+        self.fx = self.rng.choice(EFFECTS)
+        self.t0 = None  # starts on the first frame, after the transcripts have loaded
+        self.text = None
+        self.grids = {}
+
+    def active(self):
+        """True while the title is moving and wants fast frames."""
+        if not self.motion:
+            return False
+        if self.t0 is None:
+            return True
+        t = time.monotonic() - self.t0 - (INTRO_HOLD + FX_OUT + FX_IN)
+        return t < 0 or t % SHIMMER_EVERY >= SHIMMER_EVERY - SHIMMER_S
+
+    def pick(self, width):
+        hour = datetime.now().hour
+        opts, short = [(o, sh) for start, o, sh in GREETINGS if start <= hour][-1]
+        options = [o.format(u=self.user) for o in opts]
+        fits = [o for o in options if len(logo_rows(o)[0]) <= width]
+        if fits:
+            return self.rng.choice(fits)
+        return short if len(logo_rows(short)[0]) <= width else min(options, key=len)
+
+    def grid(self, text, width, label=False):
+        """Cells of the text in block letters (rows 0-3), or spaced plain text when the block
+        letters are too wide. With label, a small "cctop" sits on row -1 over the right end."""
+        key = (text, width, label)
+        if key not in self.grids:
+            rows = logo_rows(text)
+            if len(rows[0]) > width:
+                rows = ["", " ".join(text), "", ""]
+            gw = max(len(row) for row in rows)
+            big = C["fg"] | curses.A_BOLD
+            cells = [(r, c, ch, self.rng.random(), big) for r, row in enumerate(rows)
+                     for c, ch in enumerate(row) if ch != " "]
+            if label:
+                cells += [(-1, gw - 5 + i, ch, self.rng.random(), C["muted"]) for i, ch in enumerate("cctop")]
+            self.grids[key] = (cells, gw)
+        return self.grids[key]
+
+    def frame(self, width):
+        """(cells to draw as (row, col, char, attr), width of the text). Rows run from -1 to 3."""
+        if self.t0 is None:
+            self.t0 = time.monotonic()
+            self.text = self.pick(width)
+        t = time.monotonic() - self.t0
+        fx, p = None, 1.0
+        if t < INTRO_HOLD:
+            text, fx, p = self.text, self.fx, t / FX_IN
+        elif self.motion and t < INTRO_HOLD + FX_OUT:
+            text, fx, p = self.text, fx_decrypt, 1 - (t - INTRO_HOLD) / FX_OUT  # decrypt run backwards
+        elif self.motion and t < INTRO_HOLD + FX_OUT + FX_IN:
+            text, fx, p = "cctop.", fx_rise, (t - INTRO_HOLD - FX_OUT) / FX_IN
+        else:
+            text = "cctop."
+            idle = t - (INTRO_HOLD + FX_OUT + FX_IN)
+            rest = SHIMMER_EVERY - SHIMMER_S  # the logo rests first, then a wave passes
+            if self.motion and idle > 0 and idle % SHIMMER_EVERY >= rest:
+                fx, p = fx_shimmer, (idle % SHIMMER_EVERY - rest) / SHIMMER_S
+        cells, gw = self.grid(text, width, label=text != "cctop.")
+        if not self.motion or p >= 1:
+            return [(r, c, ch, a) for r, c, ch, _, a in cells], gw
+        return fx(cells, max(0.0, p), gw, int(t * 24)), gw
 
 
 def init_colors():
@@ -1139,8 +1348,9 @@ def level(pct, warn=70, bad=90):
 
 
 class Screen:
-    def __init__(self, win):
+    def __init__(self, win, grow=1.0):
         self.win = win
+        self.grow = grow  # 0-1: bars draw this share of their value while a new view settles in
         self.h, self.w = win.getmaxyx()
 
     def put(self, y, x, s, attr=0, maxw=None):
@@ -1201,7 +1411,7 @@ class Screen:
     def meter(self, y, x, cols, pct, attr):
         """The one bar style used everywhere: lit squares, then dim ones, within `cols` columns."""
         n = sq_count(cols)
-        pct = min(max(pct, 0), 100)
+        pct = min(max(pct, 0), 100) * self.grow
         on = round(n * pct / 100)
         if pct > 0 and on == 0:
             on = 1
@@ -1237,9 +1447,9 @@ def stat_text(scr, y, x, add, rem):
 def stat_bar(scr, y, x, cells, add, rem, scale=1.0):
     """GitHub-style diff bar of `cells` squares: green for additions, red for deletions."""
     total = add + rem
-    filled = max(1, round(cells * min(scale, 1))) if total else 0
+    filled = round(max(1, round(cells * min(scale, 1))) * scr.grow) if total else 0
     green = round(filled * add / total) if total else 0
-    if add and not green:
+    if add and not green and filled:
         green = 1
     red = filled - green
     if rem and not red and filled > 1:
@@ -1277,6 +1487,10 @@ class App:
         self.last_sys = 0
         self.live = []
         self.limits = Limits()
+        self.intro = Intro(self.sys.user)
+        self.started = time.monotonic()
+        self.view = None     # what is on screen; when it changes, bars grow in again
+        self.anim_at = 0.0
 
     def tick(self, force=False):
         now = time.time()
@@ -1323,7 +1537,8 @@ class App:
 
     # ---- frame
     def draw(self):
-        scr = Screen(self.win)
+        g = min(1.0, (time.monotonic() - self.anim_at) / GROW_S) if MOTION else 1.0
+        scr = Screen(self.win, 1 - (1 - g) ** 3)  # ease out
         self.win.erase()
         W, H = scr.w, scr.h
         if W < 80 or H < 24:
@@ -1359,17 +1574,19 @@ class App:
         cw = min(w - 2, 84)
         cx = x + (w - cw) // 2
         live = self.live[:max(1, min(len(self.live), 5))]
-        logo = logo_rows("cctop.")
         notes = self.context_notes()
         body = 1 + 4 + 1 + 1 + max(1, len(live)) + 1 + 1 + 1 + (1 + len(notes) if notes else 0)
-        show_logo = h >= body + len(logo) + 2
-        total = body + (len(logo) + 2 if show_logo else 0)
-        r = y + max(0, (h - total) // 2)
+        # title: a label row, 4 rows of block letters and a gap of 2 (1 when the screen is tight)
+        show_logo = h >= body + 1 + LOGO_ROWS + 1
+        title_h = (1 + LOGO_ROWS + (2 if h >= body + 1 + LOGO_ROWS + 2 else 1)) if show_logo else 0
+        r = y + max(0, (h - body - title_h) // 2)
         if show_logo:
-            for line in logo:
-                scr.center(r, x, w, line, C["fg"] | curses.A_BOLD)
-                r += 1
-            r += 2
+            cells, gw = self.intro.frame(w - 2)
+            lx = x + max(0, (w - gw) // 2)
+            for rr, cc, ch, attr in cells:
+                if x <= lx + cc < x + w:  # sliding cells stay inside the frame
+                    scr.put(r + 1 + rr, lx + cc, ch, attr)
+            r += title_h
 
         r = self.ov_header(scr, r, cx, cw, "limits")
         r = self.ov_limits(scr, r, cx, cw)
@@ -1382,6 +1599,8 @@ class App:
             if r >= y + h:
                 break
             scr.center(r, cx, cw, text, attr)
+        if r < y + h - 2:
+            scr.center(y + h - 1, x, w, "side quest of smh", C["dim"])
 
     def context_notes(self):
         """One reminder line per live session whose context is getting long."""
@@ -1454,7 +1673,8 @@ class App:
                 scr.put(r + 1, bx + dot, "●", C["fg"])
                 scr.put(r + 1, bx + dot + 1, "─" * (bw - dot - 1), C["faint"])
                 pace, pattr = self.pace(used, elapsed, span * elapsed)
-                scr.put(r + 1, bx + bw + 1, pace, pattr, x + w - (bx + bw + 1))
+                # right-aligned under the reset time
+                scr.put(r + 1, max(bx + bw + 1, x + w - len(pace)), pace, pattr, x + w - (bx + bw + 1))
             r += 2
         return r
 
@@ -1627,7 +1847,7 @@ class App:
         cur = a["now"].hour if self.day == 0 else -1
         base = y + chart_h - 3
         for hr, v in enumerate(vals):
-            eighths = round(v / peak * ch * 8) if peak else 0
+            eighths = round(v / peak * ch * 8 * scr.grow) if peak else 0
             if v and not eighths:
                 eighths = 1
             attr = C["sand"] if hr == cur else C["teal"]
@@ -2023,7 +2243,9 @@ class App:
                 dur = ""
             name, _, rest = act["summary"].partition("  ")
             n = scr.put(r, x + 11, name, C["rose"] if act["status"] != "err" else C["clay"])
-            scr.put(r, x + 12 + n, rest, C["fg"] if i == 0 else C["muted"], w - 13 - n - len(dur))
+            fresh = MOTION and act["seen"] - self.started > 3 and time.monotonic() - act["seen"] < 1.2
+            rest_attr = C["teal"] | curses.A_BOLD if fresh else C["fg"] if i == 0 else C["muted"]
+            scr.put(r, x + 12 + n, rest, rest_attr, w - 13 - n - len(dur))
             scr.put(r, x + w - len(dur), dur, C["dim"])
 
     def tab_projects(self, scr, y, x, h, w):
@@ -2169,8 +2391,9 @@ class App:
             n = sq_count(w)
             days = [(today - timedelta(days=n - 1 - i), i, 0) for i in range(n)]
         top = max(per_day.values(), default=0)
+        wave = scr.grow * (days[-1][1] + 2)  # columns fill in left to right as the view opens
         for day, col, row in days:
-            c = per_day.get(day, 0)
+            c = per_day.get(day, 0) if col < wave else 0
             lvl = 0 if not c else min(4, 1 + int(3 * (c - 1) / max(1, top - 1)) if top > 1 else 4)
             scr.put(y + row, x + lw + 2 * col, SQ, C[f"heat{lvl}"] if lvl else C["faint"])
 
@@ -2281,12 +2504,18 @@ class App:
         if THEME["paint"]:
             self.win.bkgd(" ", C["fg"])  # fill every empty cell with the theme background
         self.win.keypad(True)
-        self.win.timeout(250)  # lets the busy spinner on the Overview turn
         self.tick(force=True)
         while True:
             self.tick()
+            view = (self.tab, self.proj_name, self.sel_sid, self.day, self.metric)
+            if view != self.view:
+                self.view, self.anim_at = view, time.monotonic()
             self.draw()
             self.win.refresh()
+            # 30 fps while something moves (the Overview title, bars growing in), else 4 fps
+            moving = (self.tab == 0 and self.intro.active()) or \
+                (MOTION and time.monotonic() - self.anim_at < GROW_S + 0.1)
+            self.win.timeout(33 if moving else 250)
             key = self.win.getch()
             if key in (ord("q"), 27):
                 return
