@@ -89,8 +89,6 @@
   .site-header { border-bottom: 1px solid var(--border); }
   .site-header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 1rem; height: 4rem; }
   .brand { display: inline-flex; align-items: center; gap: .5rem; font-family: var(--font-mono); font-weight: 700; color: var(--text); text-decoration: none; font-size: 1rem; }
-  .brand img { width: 1.5rem; height: 1.5rem; }
-  .hero-logo { width: 5.5rem; height: 5.5rem; margin-bottom: 1.25rem; }
   .brand:hover { color: var(--text); }
   .nav { display: flex; align-items: center; gap: 1.25rem; font-size: .875rem; }
   .nav a { color: var(--text-body); text-decoration: none; }
@@ -174,7 +172,7 @@
 
 <header class="site-header">
   <div class="wrap">
-    <a class="brand" href="./" aria-label="cctop home"><img src="logo.png" width="24" height="24" alt=""> cctop.</a>
+    <a class="brand" href="./" aria-label="cctop home">cctop.</a>
     <nav class="nav" aria-label="Main">
       <a href="#features">Features</a>
       <a href="#install">Install</a>
@@ -192,7 +190,6 @@
   <div class="wrap">
 
     <section class="hero" aria-labelledby="title">
-      <img class="hero-logo" src="logo.png" width="1150" height="1150" alt="The cctop logo: a pixel-art portrait of a man with a beard">
       <p class="eyebrow"><span class="dot" aria-hidden="true"></span> Version 0.4.0 <span aria-hidden="true">·</span> Linux <span aria-hidden="true">·</span> MIT licence</p>
       <h1 id="title">cctop</h1>
       <p class="lead">A terminal dashboard for Claude Code. See how much of your plan is left, what every session is doing, and where you left off in each project, next to the health of your machine.</p>
