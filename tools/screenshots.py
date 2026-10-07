@@ -494,6 +494,9 @@ def main():
             stills.append((name, capture()))
         for name, ansi in stills:
             render(ansi, os.path.join(OUT, f"{name}.png"), 2)  # 2x for sharp text
+        # start on the first frame cctop has drawn, so a paused GIF or its first frame is not blank
+        while shots and "Overview" not in shots[0]:
+            shots.pop(0)
         for i, ansi in enumerate(shots):
             render(ansi, os.path.join(frames, f"f{i:04d}.png"))
         palette_filter = "split[a][b];[a]palettegen=max_colors=64:stats_mode=full[p];[b][p]paletteuse=dither=none"

@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>cctop · A terminal dashboard for Claude Code</title>
+<meta name="description" content="cctop is a terminal dashboard for Claude Code on Linux: plan limits, token usage, live sessions, your projects and the health of your machine, in one Python file.">
+<meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta property="og:title" content="cctop">
+<meta property="og:description" content="A terminal dashboard for Claude Code on Linux. One Python file, no dependencies.">
+<meta property="og:image" content="https://syedmehedihussain.github.io/cctop/media/overview.png">
+<meta property="og:url" content="https://syedmehedihussain.github.io/cctop/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="logo.png">
+<script>
+  // apply the saved theme before the first paint, so the page never flashes the wrong one
+  try {
+    var saved = localStorage.getItem("theme");
+    if (saved === "light" || saved === "dark") document.documentElement.dataset.theme = saved;
+  } catch (e) {}
+</script>
+<style>
+  /* Tokens from syedmehedihussain.codes: neutral scale, one blue accent, GitHub greens */
+  :root {
+    --bg: #ffffff;
+    --surface: #f5f5f5;          /* neutral-100 */
+    --surface-hover: #e5e5e5;
+    --border: #e5e5e5;           /* neutral-200 */
+    --border-strong: #d4d4d4;    /* neutral-300 */
+    --text: #171717;             /* neutral-900 */
+    --text-body: #525252;        /* neutral-600 */
+    --text-muted: #737373;       /* neutral-500, 4.7:1 on white */
+    --accent: #3b82f6;
+    --code-bg: #f5f5f5;
+    --heat-4: #216e39;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --radius-sm: .25rem; --radius-md: .375rem; --radius-lg: .5rem;
+    color-scheme: light;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0a0a0a;               /* neutral-950 */
+    --surface: #171717;          /* neutral-900 */
+    --surface-hover: #262626;
+    --border: #262626;           /* neutral-800 */
+    --border-strong: #404040;    /* neutral-700 */
+    --text: #f5f5f5;             /* neutral-100 */
+    --text-body: #a3a3a3;        /* neutral-400 */
+    --text-muted: #a3a3a3;       /* neutral-400: small text keeps 8:1 contrast on dark */
+    --code-bg: #171717;
+    --heat-4: #39d353;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0a0a0a; --surface: #171717; --surface-hover: #262626; --border: #262626;
+      --border-strong: #404040; --text: #f5f5f5; --text-body: #a3a3a3; --text-muted: #a3a3a3;
+      --code-bg: #171717;
+      --heat-4: #39d353;
+      color-scheme: dark;
+    }
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0; background: var(--bg); color: var(--text-body);
+    font-family: var(--font-sans); font-size: 1rem; line-height: 1.625;
+  }
+  img { max-width: 100%; height: auto; display: block; }
+  a { color: var(--text); text-decoration: underline; text-decoration-color: var(--border-strong); text-underline-offset: 3px; }
+  a:hover { color: var(--accent); text-decoration-color: currentColor; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm); }
+  h1, h2, h3 { color: var(--text); line-height: 1.25; margin: 0; }
+  h2 { font-size: 1.25rem; font-weight: 600; margin-bottom: 1rem; }
+  h3 { font-size: 1.125rem; font-weight: 500; }
+  p { margin: 0; }
+  code, pre, kbd { font-family: var(--font-mono); font-size: .875rem; }
+  :not(pre) > code { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: .05rem .3rem; color: var(--text); }
+  kbd { border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: var(--radius-sm); padding: 0 .35rem; color: var(--text); background: var(--surface); }
+
+  .skip { position: absolute; left: -999px; top: .5rem; background: var(--text); color: var(--bg); padding: .5rem .75rem; border-radius: var(--radius-md); z-index: 10; }
+  .skip:focus { left: 1rem; }
+  .wrap { max-width: 48rem; margin: 0 auto; padding: 0 1rem; }
+
+  /* header */
+  .site-header { border-bottom: 1px solid var(--border); }
+  .site-header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 1rem; height: 4rem; }
+  .brand { font-family: var(--font-mono); font-weight: 700; color: var(--text); text-decoration: none; font-size: 1rem; }
+  .brand:hover { color: var(--text); }
+  .nav { display: flex; align-items: center; gap: 1.25rem; font-size: .875rem; }
+  .nav a { color: var(--text-body); text-decoration: none; }
+  .nav a:hover { color: var(--text); text-decoration: underline; }
+  .icon-btn { display: inline-grid; place-items: center; width: 2rem; height: 2rem; border: 0; background: none; color: var(--text-body); border-radius: var(--radius-md); cursor: pointer; }
+  .icon-btn:hover { background: var(--surface); color: var(--text); }
+  .icon-btn svg { width: 1.125rem; height: 1.125rem; }
+  .theme-dark-icon { display: none; }
+  :root[data-theme="dark"] .theme-dark-icon { display: block; }
+  :root[data-theme="dark"] .theme-light-icon { display: none; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .theme-dark-icon { display: block; }
+    :root:not([data-theme="light"]) .theme-light-icon { display: none; }
+  }
+  @media (max-width: 34rem) { .nav .hide-sm { display: none; } }
+
+  /* sections */
+  main section { padding: 3rem 0 0; }
+  .hero { padding-top: 2.5rem; }
+  .eyebrow { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; font-size: .875rem; color: var(--text-muted); }
+  .dot { width: .375rem; height: .375rem; border-radius: 1px; background: var(--heat-4); display: inline-block; }
+  .hero h1 { font-family: var(--font-mono); font-size: 1.875rem; font-weight: 700; margin: .75rem 0 1rem; letter-spacing: -.025em; }
+  .lead { font-size: 1.125rem; max-width: 40rem; }
+  .actions { display: flex; flex-wrap: wrap; gap: .75rem; margin-top: 1.5rem; }
+  .btn { display: inline-flex; align-items: center; gap: .375rem; border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: .375rem .75rem; font-size: .875rem; font-weight: 500; color: var(--text); text-decoration: none; background: transparent; cursor: pointer; font-family: inherit; }
+  .btn:hover { background: var(--surface); color: var(--text); }
+  .links { display: flex; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; font-size: .875rem; }
+
+  .screen { margin-top: 2rem; border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; background: #0d1117; }
+  .screen figcaption, .caption { font-size: .75rem; color: var(--text-muted); margin-top: .5rem; }
+
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  @media (max-width: 40rem) { .stats { grid-template-columns: 1fr; } }
+  .stat { background: var(--surface); border-radius: var(--radius-lg); padding: 1rem; }
+  .stat strong { display: block; font-size: 1.5rem; color: var(--text); font-weight: 700; line-height: 1.2; }
+  .stat span { display: block; font-size: .875rem; color: var(--text); margin-top: .25rem; }
+  .stat small { display: block; font-size: .75rem; color: var(--text-muted); margin-top: .125rem; }
+
+  /* feature tabs */
+  .tablist { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+  .tab { border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: .25rem .75rem; font-size: .875rem; background: transparent; color: var(--text-body); cursor: pointer; font-family: inherit; }
+  .tab:hover { background: var(--surface); color: var(--text); }
+  .tab[aria-selected="true"] { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .tab kbd { border: 0; background: none; padding: 0; color: inherit; opacity: .7; margin-right: .25rem; }
+  .panel + .panel { margin-top: 2rem; }
+  .panel h3 { margin-bottom: .375rem; }
+  .panel p { max-width: 40rem; }
+
+  .list { display: grid; gap: 1.5rem; margin-top: 1rem; }
+  .item { border-left: 2px solid var(--border-strong); padding-left: 1rem; }
+  .item h3 { font-size: 1rem; font-weight: 500; margin-bottom: .25rem; }
+  .item p { font-size: .875rem; }
+
+  /* install */
+  .steps { display: grid; gap: 1.75rem; }
+  .step h3 { font-size: 1rem; font-weight: 500; margin-bottom: .5rem; }
+  .step p { font-size: .875rem; margin-top: .5rem; }
+  .code { position: relative; }
+  .code pre { margin: 0; background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: .875rem 1rem; padding-right: 5rem; overflow-x: auto; color: var(--text); line-height: 1.6; }
+  .code .copy { position: absolute; top: .5rem; right: .5rem; padding: .125rem .5rem; font-size: .75rem; background: var(--bg); }
+  .req { display: grid; grid-template-columns: max-content 1fr; gap: .375rem 1.25rem; font-size: .875rem; margin: 0; }
+  .req dt { color: var(--text); }
+  .req dd { margin: 0; }
+
+  table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+  th, td { text-align: left; padding: .5rem .75rem .5rem 0; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--text); font-weight: 500; }
+
+  .cta { margin-top: 3rem; border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 1.5rem; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; }
+  .cta h2 { margin: 0 0 .25rem; font-size: 1.125rem; }
+  .cta p { font-size: .875rem; }
+  footer { padding: 2rem 0 3rem; font-size: .875rem; }
+  footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; }
+  footer nav { display: flex; flex-wrap: wrap; gap: 1rem; }
+  .muted { color: var(--text-muted); }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="cctop home">cctop.</a>
+    <nav class="nav" aria-label="Main">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a class="hide-sm" href="#privacy">Privacy</a>
+      <a href="https://github.com/syedmehedihussain/cctop">GitHub</a>
+      <button class="icon-btn" id="theme" type="button" aria-label="Switch to dark theme">
+        <svg class="theme-light-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="theme-dark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <div class="wrap">
+
+    <section class="hero" aria-labelledby="title">
+      <p class="eyebrow"><span class="dot" aria-hidden="true"></span> Version 0.3.0 <span aria-hidden="true">·</span> Linux <span aria-hidden="true">·</span> MIT licence</p>
+      <h1 id="title">cctop</h1>
+      <p class="lead">A terminal dashboard for Claude Code. See how much of your plan is left, what every session is doing, and where you left off in each project, next to the health of your machine.</p>
+      <div class="actions">
+        <a class="btn" href="#install">Install <span aria-hidden="true">→</span></a>
+        <a class="btn" href="https://github.com/syedmehedihussain/cctop">View on GitHub</a>
+      </div>
+      <p class="links">
+        <a href="https://github.com/syedmehedihussain/cctop/releases">Releases</a>
+        <a href="https://github.com/syedmehedihussain/cctop/blob/main/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/syedmehedihussain/cctop#readme">Documentation</a>
+      </p>
+
+      <figure class="screen" style="margin-left:0;margin-right:0">
+        <picture>
+          <source media="(prefers-reduced-motion: reduce)" srcset="media/overview.png">
+          <img src="media/overview.gif" width="1152" height="680"
+               alt="The cctop Overview. A greeting, good morning, appears in large pixel letters and changes into the cctop logo, which rises into place. Below it are the 5-hour and weekly plan limits, two live Claude Code sessions and a one-line system summary.">
+        </picture>
+      </figure>
+      <p class="caption">The Overview at launch. Screens on this page use made-up demo data.</p>
+    </section>
+
+    <section aria-label="At a glance">
+      <div class="stats">
+        <div class="stat"><strong>1 file</strong><span>Python 3.9 or newer</span><small>standard library only</small></div>
+        <div class="stat"><strong>5 tabs</strong><span>One key each</span><small>Overview to System</small></div>
+        <div class="stat"><strong>Local</strong><span>Reads data already on your machine</span><small>plan limits are the one request</small></div>
+      </div>
+    </section>
+
+    <section id="features" aria-labelledby="features-title">
+      <h2 id="features-title">Five tabs, one key each</h2>
+      <div class="tablist" role="tablist" aria-label="cctop tabs" hidden>
+        <button class="tab" role="tab" id="tab-overview" aria-controls="panel-overview"><kbd>1</kbd>Overview</button>
+        <button class="tab" role="tab" id="tab-projects" aria-controls="panel-projects"><kbd>2</kbd>Projects</button>
+        <button class="tab" role="tab" id="tab-live" aria-controls="panel-live"><kbd>3</kbd>Live</button>
+        <button class="tab" role="tab" id="tab-usage" aria-controls="panel-usage"><kbd>4</kbd>Usage</button>
+        <button class="tab" role="tab" id="tab-system" aria-controls="panel-system"><kbd>5</kbd>System</button>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-overview" aria-labelledby="tab-overview">
+        <h3>Overview</h3>
+        <p>Your 5-hour and weekly plan limits, the time until each resets and where your current pace ends up. Below them, every live session with what it is doing now, a one-line system summary, and a reminder when a session's context gets long.</p>
+        <figure class="screen" style="margin-left:0;margin-right:0"><img src="media/overview.png" width="2304" height="1360" loading="lazy"
+          alt="The Overview tab: the cctop logo, plan limit bars at 41% and 33% with reset times, two live sessions, a system summary and a context reminder for one session."></figure>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-projects" aria-labelledby="tab-projects">
+        <h3>Projects</h3>
+        <p>Every folder in <code>~/Projects</code> with what you are building, where you left off, the next steps, the project's documents and a commit calendar. A Claude Code hook keeps the notes up to date for you.</p>
+        <figure class="screen" style="margin-left:0;margin-right:0"><img src="media/projects.png" width="2304" height="1360" loading="lazy"
+          alt="The Projects tab: a list of four projects, and for atlas-api its summary, progress, what we are building, where we left off, next steps and an activity box with a commit calendar."></figure>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-live" aria-labelledby="tab-live">
+        <h3>Live</h3>
+        <p>Everything about one running session: the file tree with the files Claude has read or changed, the model and context size, a feed of tool calls, the current prompt, agents, skills and todos, and the state of the repository.</p>
+        <figure class="screen" style="margin-left:0;margin-right:0"><img src="media/live.png" width="2304" height="1360" loading="lazy"
+          alt="The Live tab: a file tree highlighting the file being edited, session details, an activity feed, the current prompt with todos, git status and plan usage."></figure>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-usage" aria-labelledby="tab-usage">
+        <h3>Usage</h3>
+        <p>Tokens by hour for any of the last seven days, a seven-day summary, and the split by model and by project.</p>
+        <figure class="screen" style="margin-left:0;margin-right:0"><img src="media/usage.png" width="2304" height="1360" loading="lazy"
+          alt="The Usage tab: a bar chart of tokens by hour for one day, with the last seven days, the share per model and the share per project below it."></figure>
+      </div>
+
+      <div class="panel" role="tabpanel" id="panel-system" aria-labelledby="tab-system">
+        <h3>System</h3>
+        <p>CPU, memory, swap, disk, battery, temperatures, fan and load, with short history graphs.</p>
+        <figure class="screen" style="margin-left:0;margin-right:0"><img src="media/system.png" width="2304" height="1360" loading="lazy"
+          alt="The System tab: meters for CPU, memory, swap, disk and battery, readings for temperature, fan and load, and graphs of the last two minutes."></figure>
+      </div>
+    </section>
+
+    <section aria-labelledby="why-title">
+      <h2 id="why-title">Built for the way you work</h2>
+      <div class="list">
+        <div class="item">
+          <h3>Pick up where you left off</h3>
+          <p>A hook records every session into the project it worked on, and an optional skill teaches Claude to keep each project's status current. Open the Projects tab and the last state of every project is there.</p>
+        </div>
+        <div class="item">
+          <h3>Know when to clear the context</h3>
+          <p>cctop measures each session's context against the model's window and reminds you to <code>/clear</code> at 40% and to clear or compact at 70%.</p>
+        </div>
+        <div class="item">
+          <h3>Quiet by design</h3>
+          <p>A calm GitHub dark theme, motion that stays short and can be turned off with <code>CCTOP_MOTION=off</code>, and every function on a single key.</p>
+        </div>
+        <div class="item">
+          <h3>Nothing to install but Python</h3>
+          <p>One file, the standard library only. Link it into your <code>PATH</code> and run it in any terminal from 80 by 24 upwards.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="install" aria-labelledby="install-title">
+      <h2 id="install-title">Install</h2>
+      <div class="steps">
+        <div class="step">
+          <h3>Latest version</h3>
+          <div class="code"><pre><code>git clone https://github.com/syedmehedihussain/cctop.git
+cd cctop
+./install.sh
+cctop</code></pre></div>
+          <p><code>install.sh</code> links <code>cctop</code> into <code>~/.local/bin</code> and changes nothing else. Add <code>--skill</code> to also install the project-notes skill for Claude Code.</p>
+        </div>
+        <div class="step">
+          <h3>A specific version</h3>
+          <div class="code"><pre><code>git clone --branch v0.3.0 --depth 1 https://github.com/syedmehedihussain/cctop.git
+cd cctop
+./install.sh</code></pre></div>
+          <p>Every release is tagged and listed on the <a href="https://github.com/syedmehedihussain/cctop/releases">Releases page</a>. Changes are in the <a href="https://github.com/syedmehedihussain/cctop/blob/main/CHANGELOG.md">changelog</a>.</p>
+        </div>
+        <div class="step">
+          <h3>Only the program file</h3>
+          <div class="code"><pre><code>mkdir -p ~/.local/bin
+curl -fL -o ~/.local/bin/cctop \
+  https://raw.githubusercontent.com/syedmehedihussain/cctop/v0.3.0/cctop.py
+chmod +x ~/.local/bin/cctop</code></pre></div>
+          <p>The single file is the whole dashboard. To update, run the same command with the new version number.</p>
+        </div>
+        <div class="step">
+          <h3>Requirements</h3>
+          <dl class="req">
+            <dt>System</dt><dd>Linux</dd>
+            <dt>Python</dt><dd>3.9 or newer</dd>
+            <dt>Claude Code</dt><dd>Used at least once, so <code>~/.claude</code> exists</dd>
+            <dt>Terminal</dt><dd>80 by 24 or larger, 256 colours</dd>
+            <dt>Font</dt><dd>A <a href="https://www.nerdfonts.com">Nerd Font</a> is recommended; any font works with <code>CCTOP_SQUARE="■ "</code></dd>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="keys-title">
+      <h2 id="keys-title">Keys</h2>
+      <table>
+        <caption class="sr-only">Keyboard shortcuts</caption>
+        <thead><tr><th scope="col">Key</th><th scope="col">Action</th></tr></thead>
+        <tbody>
+          <tr><td><kbd>1</kbd> to <kbd>5</kbd></td><td>Go to a tab</td></tr>
+          <tr><td><kbd>Tab</kbd>, <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>Next or previous tab</td></tr>
+          <tr><td><kbd>Left</kbd>, <kbd>Right</kbd></td><td>Usage: previous or next day. Live: previous or next session</td></tr>
+          <tr><td><kbd>Up</kbd>, <kbd>Down</kbd></td><td>Projects: select a project</td></tr>
+          <tr><td><kbd>o</kbd></td><td>Projects: open the project folder</td></tr>
+          <tr><td><kbd>t</kbd></td><td>Usage: all tokens, input and output, or output only</td></tr>
+          <tr><td><kbd>r</kbd></td><td>Reload all data</td></tr>
+          <tr><td><kbd>q</kbd></td><td>Quit</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="privacy" aria-labelledby="privacy-title">
+      <h2 id="privacy-title">Privacy</h2>
+      <div class="list">
+        <div class="item">
+          <h3>Everything is read from your machine</h3>
+          <p>Transcripts, live sessions, git and system data are read locally. cctop writes only to <code>~/.cache/cctop</code>, and, when you use the hook, to each project's <code>_project/</code> folder.</p>
+        </div>
+        <div class="item">
+          <h3>One request, to Anthropic only</h3>
+          <p>For plan limits, cctop calls the same endpoint as Claude Code's <code>/usage</code> command, with the login Claude Code already stores. The token is sent only to <code>api.anthropic.com</code>, never logged or saved, and the result is cached for five minutes.</p>
+        </div>
+      </div>
+    </section>
+
+    <div class="cta">
+      <div>
+        <h2>Found a bug or have an idea?</h2>
+        <p>cctop is open source under the MIT licence. Issues and pull requests are welcome.</p>
+      </div>
+      <a class="btn" href="https://github.com/syedmehedihussain/cctop/issues/new/choose">Open an issue <span aria-hidden="true">→</span></a>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p class="muted">A side quest of <a href="https://syedmehedihussain.codes">Syed Mehedi Hussain</a>.</p>
+    <nav aria-label="Footer">
+      <a href="https://github.com/syedmehedihussain/cctop">GitHub</a>
+      <a href="https://github.com/syedmehedihussain/cctop/releases">Releases</a>
+      <a href="https://github.com/syedmehedihussain/cctop/blob/main/CONTRIBUTING.md">Contributing</a>
+      <a href="https://github.com/syedmehedihussain/cctop/blob/main/SECURITY.md">Security</a>
+    </nav>
+  </div>
+</footer>
+
+<script>
+  // theme toggle: follows the system until you choose, then remembers the choice
+  (function () {
+    var root = document.documentElement, btn = document.getElementById("theme");
+    var mq = window.matchMedia("(prefers-color-scheme: dark)");
+    function current() { return root.dataset.theme || (mq.matches ? "dark" : "light"); }
+    function label() { btn.setAttribute("aria-label", "Switch to " + (current() === "dark" ? "light" : "dark") + " theme"); }
+    btn.addEventListener("click", function () {
+      var next = current() === "dark" ? "light" : "dark";
+      root.dataset.theme = next;
+      try { localStorage.setItem("theme", next); } catch (e) {}
+      label();
+    });
+    mq.addEventListener && mq.addEventListener("change", label);
+    label();
+  })();
+
+  // feature tabs: without JavaScript every panel shows; with it, a keyboard-friendly tab list
+  (function () {
+    var list = document.querySelector('[role="tablist"]');
+    var tabs = Array.prototype.slice.call(list.querySelectorAll('[role="tab"]'));
+    var panels = tabs.map(function (t) { return document.getElementById(t.getAttribute("aria-controls")); });
+    function select(i, focus) {
+      tabs.forEach(function (t, j) {
+        var on = i === j;
+        t.setAttribute("aria-selected", on ? "true" : "false");
+        t.tabIndex = on ? 0 : -1;
+        panels[j].hidden = !on;
+      });
+      if (focus) tabs[i].focus();
+    }
+    list.hidden = false;
+    panels.forEach(function (p) { p.querySelector("h3").classList.add("sr-only"); });
+    tabs.forEach(function (t, i) {
+      t.addEventListener("click", function () { select(i, false); });
+      t.addEventListener("keydown", function (e) {
+        var n = tabs.length, k = e.key;
+        if (k === "ArrowRight") { select((i + 1) % n, true); e.preventDefault(); }
+        else if (k === "ArrowLeft") { select((i - 1 + n) % n, true); e.preventDefault(); }
+        else if (k === "Home") { select(0, true); e.preventDefault(); }
+        else if (k === "End") { select(n - 1, true); e.preventDefault(); }
+      });
+    });
+    select(0, false);
+  })();
+
+  // copy buttons on code blocks
+  (function () {
+    document.querySelectorAll(".code").forEach(function (box) {
+      var btn = document.createElement("button");
+      btn.type = "button"; btn.className = "btn copy"; btn.textContent = "Copy";
+      btn.setAttribute("aria-label", "Copy commands");
+      btn.addEventListener("click", function () {
+        var text = box.querySelector("code").innerText;
+        var done = function () { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy"; }, 1600); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done, function () { btn.textContent = "Select and copy"; });
+        } else { btn.textContent = "Select and copy"; }
+      });
+      box.appendChild(btn);
+    });
+  })();
+</script>
+</body>
+</html>
